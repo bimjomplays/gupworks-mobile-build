@@ -37,6 +37,9 @@ targets:
         UIViewControllerBasedStatusBarAppearance: true
         UISupportedInterfaceOrientations: [UIInterfaceOrientationPortrait]
         ITSAppUsesNonExemptEncryption: false
+        # pairing: the app scans the QR code the PC shows (the camera picture never leaves the phone)
+        NSCameraUsageDescription: >-
+          GupWorks uses the camera only to scan the pairing code your PC shows. Nothing is recorded or sent anywhere.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.gupworks.mobile

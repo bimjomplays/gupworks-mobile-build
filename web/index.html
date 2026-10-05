@@ -1,40 +1,92 @@
 <!doctype html>
-<!-- Placeholder: proves the iOS shell loads the bundled web/ folder. The real glass UI replaces it in the next slice.
-     Opens in any desktop browser too. -->
+<!-- GupWorks iPhone app UI (look D "Liquid Terminal"). Loaded by the iOS shell from the app bundle; opens in any
+     desktop browser too. Dev: index.html?mock (in-page fake PC), add &frame for an iPhone status bar, &tab=waiting
+     or &tab=status to open on another tab. Inside the app, native.js talks to the iOS shell (pairing, PC calls). -->
 <html lang="en">
 <head>
 <meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<meta name="viewport" content="width=device-width, initial-scale=1, maximum-scale=1, viewport-fit=cover">
 <meta name="color-scheme" content="dark">
+<meta name="format-detection" content="telephone=no">
 <title>GupWorks</title>
-<style>
-  html, body { margin: 0; height: 100%; background: #121212; color: #eef1fa; }
-  body {
-    font: 19px/1.45 -apple-system, system-ui, sans-serif;
-    display: flex; flex-direction: column; align-items: center; justify-content: center; gap: 14px;
-    padding: env(safe-area-inset-top) 24px env(safe-area-inset-bottom);
-    box-sizing: border-box; text-align: center;
-    -webkit-user-select: none; user-select: none;
-  }
-  .card {
-    padding: 28px 30px; border-radius: 26px; max-width: 420px;
-    background: rgba(255, 255, 255, 0.07); border: 1px solid rgba(255, 255, 255, 0.12);
-    -webkit-backdrop-filter: blur(20px); backdrop-filter: blur(20px);
-  }
-  h1 { margin: 0 0 8px; font-size: 32px; }
-  p { margin: 0; color: #b9c0d4; }
-  #where { margin-top: 14px; font-size: 15px; color: #8a93ab; }
-</style>
+<link rel="stylesheet" href="look.css">
+<link rel="stylesheet" href="app.css">
 </head>
 <body>
-  <div class="card">
-    <h1>GupWorks</h1>
-    <p>The iPhone shell is running. The real app UI arrives in the next build.</p>
-    <p id="where"></p>
+<div id="app">
+  <!-- Gup chat -->
+  <section class="view" id="v-gup" aria-label="Gup chat">
+    <header class="chead" id="chead">
+      <span id="chead-bot"></span>
+      <button class="nm" id="chead-name" type="button">gup <span id="chead-chev"></span></button>
+      <div class="st" id="conn">● connecting…</div>
+    </header>
+    <div class="msgs" id="msgs" aria-live="polite"><div class="msgs-in" id="msgs-in"></div></div>
+    <div class="comp" id="comp">
+      <button class="plus g" id="plus" type="button" aria-label="Attach"></button>
+      <label class="field g" id="field">
+        <b>›</b>
+        <textarea id="input" rows="1" enterkeyhint="send" autocomplete="off" autocapitalize="sentences" spellcheck="true"
+                  aria-label="Message Gup"></textarea>
+        <span class="ph" id="ph">message gup<i class="cur blink"></i></span>
+      </label>
+      <button class="mic" id="mic" type="button" aria-label="Talk to Gup"></button>
+    </div>
+  </section>
+
+  <!-- Waiting on you -->
+  <section class="view scroller" id="v-waiting" aria-label="Waiting on you">
+    <div class="top"><h1>Waiting on you</h1><div class="sub" id="w-sub">loading…</div></div>
+    <div class="filters" id="w-filters"></div>
+    <div class="list" id="w-list"></div>
+  </section>
+
+  <!-- Projects (later) -->
+  <section class="view scroller" id="v-projects" aria-label="Projects">
+    <div class="top"><h1>Projects</h1><div class="sub">tickets and floors</div></div>
+    <div class="list"><div class="card g soon"><div class="lbl">coming later</div>
+      <div class="det">Projects, tickets and floor health come to the phone in a later version. For now they're on the PC.</div></div></div>
+  </section>
+
+  <!-- Status and usage -->
+  <section class="view scroller" id="v-status" aria-label="Status">
+    <div class="stat" id="s-body"></div>
+  </section>
+
+  <nav class="tabbar" id="tabbar" aria-label="Tabs">
+    <button class="tab" data-tab="gup" type="button"><span class="tbbot" id="tab-gup-icon"></span><span>Gup</span></button>
+    <button class="tab" data-tab="waiting" type="button"><span id="tab-waiting-icon"></span><em class="tbadge hidden" id="badge"></em><span>Waiting</span></button>
+    <button class="tab" data-tab="projects" type="button"><span id="tab-projects-icon"></span><span>Projects</span></button>
+    <button class="tab" data-tab="status" type="button"><span id="tab-status-icon"></span><span>Status</span></button>
+  </nav>
+</div>
+
+<!-- Pairing with the PC (shown over everything; inside the app the camera runs under the page) -->
+<section class="pair hidden" id="pair" aria-label="Pair with your PC">
+  <div class="pr">
+    <div class="nav">
+      <button class="g" id="pair-x" type="button" aria-label="Close"></button>
+      <span class="dim" id="pair-step">step 1 / 2</span>
+      <button class="g" id="pair-torch" type="button" aria-label="Torch"></button>
+    </div>
+    <div class="toptxt g">
+      <div class="pt"><span class="acc">›</span> Pair with your PC</div>
+      <div class="stp">1. PC: <b>Settings › Phone › Pair a phone</b><br>2. point the camera at the code</div>
+    </div>
   </div>
-<script>
-  document.getElementById("where").textContent =
-    location.protocol === "file:" ? "Loaded from the app bundle" : "Loaded from " + location.host;
-</script>
+  <div class="vf" aria-hidden="true"><i class="br tl"></i><i class="br tr"></i><i class="br bl"></i><i class="br brr"></i><i class="scan"></i></div>
+  <div class="found g hidden" id="pair-found" role="status"></div>
+  <div class="pbtn">
+    <button class="btn q hidden" id="pair-settings" type="button">open settings</button>
+    <button class="btn q" id="pair-enter" type="button">enter code instead</button>
+  </div>
+</section>
+
+<script src="api.js"></script>
+<script src="native.js"></script>
+<script src="ui.js"></script>
+<script src="hooks.js"></script>
+<script src="pair.js"></script>
+<script src="app.js"></script>
 </body>
 </html>

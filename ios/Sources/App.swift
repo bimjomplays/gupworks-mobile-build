@@ -31,8 +31,11 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 /// The whole app: one full-screen WKWebView showing the bundled web UI (web/index.html, copied in from the repo's
 /// web/ folder). The page lays itself out under the notch and home bar with env(safe-area-inset-*), so the web view
 /// itself ignores the safe area. Links to http(s) sites open in Safari; everything else outside web/ is refused.
-final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+/// The page talks to the PC through NativeBridge (the token stays native); while pairing, the camera preview sits
+/// under the web view and the web view turns transparent.
+final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, BridgeHost {
     private var webView: WKWebView!
+    private lazy var bridge = NativeBridge()
     /// web/ inside the app bundle; nil only if the build left it out
     private let webRoot = Bundle.main.url(forResource: "web", withExtension: nil)
     private let background = UIColor(named: "LaunchBG") ?? .black
@@ -44,6 +47,9 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         config.allowsInlineMediaPlayback = true
         config.mediaTypesRequiringUserActionForPlayback = []
         config.defaultWebpagePreferences.preferredContentMode = .mobile
+        // the web view keeps nothing on disk (the page stores nothing anyway; pairing lives in the Keychain)
+        config.websiteDataStore = .nonPersistent()
+        config.userContentController.addScriptMessageHandler(bridge, contentWorld: .page, name: NativeBridge.name)
 
         webView = WKWebView(frame: .zero, configuration: config)
         webView.navigationDelegate = self
@@ -56,8 +62,35 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         webView.scrollView.bounces = false
         webView.allowsBackForwardNavigationGestures = false
         webView.allowsLinkPreview = false
+        #if DEBUG
         if #available(iOS 16.4, *) { webView.isInspectable = true }
-        view = webView
+        #endif
+
+        bridge.webView = webView
+        bridge.host = self
+        bridge.isTrustedPage = { [weak self] url in self?.isInsideWebRoot(url) ?? false }
+        let root = UIView()
+        root.backgroundColor = background
+        for v in [bridge.scanner.previewView, webView!] as [UIView] {
+            v.frame = root.bounds
+            v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
+            root.addSubview(v)
+        }
+        view = root
+    }
+
+    // MARK: - BridgeHost
+
+    func setCameraVisible(_ visible: Bool) {
+        bridge.scanner.previewView.isHidden = !visible
+        let bg: UIColor = visible ? .clear : background
+        webView.backgroundColor = bg
+        webView.scrollView.backgroundColor = bg
+    }
+
+    func presentNative(_ vc: UIViewController) {
+        guard canPresent else { return }
+        present(vc, animated: true)
     }
 
     override func viewDidLoad() {
@@ -66,6 +99,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
     }
 
     private func loadHome() {
+        bridge.pageWillReload()
         guard let root = webRoot else { return showMissingUI() }
         let index = root.appendingPathComponent("index.html")
         guard FileManager.default.fileExists(atPath: index.path) else { return showMissingUI() }
@@ -92,6 +126,7 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
                  decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
         guard let url = navigationAction.request.url else { return decisionHandler(.cancel) }
         if isInsideWebRoot(url) || url.scheme == "about" || url.scheme == "blob" || url.scheme == "data" {
+            if navigationAction.targetFrame?.isMainFrame == true, url.scheme != "about" { bridge.pageWillReload() }
             return decisionHandler(.allow)
         }
         // only a link the user tapped leaves the app; the page can't push the phone to another site on its own

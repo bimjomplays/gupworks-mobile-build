@@ -1,0 +1,198 @@
+/* Screen layouts for the iPhone app (look D). Shared components are in look.css.
+   Geometry follows the look D mockups at 393 x 852 pt: tab bar 26 pt above the edge, composer 14 pt above the tab bar,
+   chat header under the status bar. */
+
+#app { position: fixed; inset: 0; background: var(--bg); overflow: hidden; }
+.view { position: absolute; inset: 0; display: none; }
+.view.on { display: block; }
+.scroller { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
+  padding-top: var(--sat); padding-bottom: calc(var(--tab-bottom) + var(--tab-h) + 24px);
+  -webkit-mask-image: linear-gradient(to bottom, transparent calc(var(--sat) - 12px), #000 calc(var(--sat) + 10px));
+          mask-image: linear-gradient(to bottom, transparent calc(var(--sat) - 12px), #000 calc(var(--sat) + 10px)); }
+.scroller::-webkit-scrollbar, .msgs::-webkit-scrollbar, .filters::-webkit-scrollbar { display: none; }
+
+/* ---------------------------------------------------------------- Gup chat */
+.chead { position: absolute; left: 0; right: 0; top: calc(var(--sat) + 2px); display: flex; flex-direction: column; align-items: center; gap: 6px;
+  padding: 0 0 10px; z-index: 5; }
+.chead .nm { font-size: 16px; font-weight: 800; display: flex; align-items: center; gap: 6px; }
+.chead .st { font-size: 12px; color: var(--green); max-width: calc(100% - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.chead .st.amber { color: var(--amber); } .chead .st.red { color: var(--red); }
+
+.msgs { position: absolute; left: 0; right: 0; top: calc(var(--sat) + 108px);
+  bottom: calc(var(--tab-bottom) + var(--tab-h) + 30px + var(--comp-h, 64px));
+  overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 0 14px;
+  -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 56px); mask-image: linear-gradient(to bottom, transparent 0, #000 56px); }
+.msgs-in { min-height: 100%; display: flex; flex-direction: column; justify-content: flex-end; gap: 12px; padding: 40px 0 4px; }
+.older { align-self: center; font-size: 12px; color: var(--dim); padding: 4px 0; }
+
+.me { align-self: flex-end; max-width: 84%; background: #7c8cff; color: #fff; border-radius: 22px; padding: 11px 16px; font-size: 15.5px; line-height: 1.45;
+  box-shadow: 0 8px 22px rgba(124,140,255,.3); overflow-wrap: anywhere; }
+.me .t { font-size: 11.5px; color: rgba(255,255,255,.7); margin-bottom: 4px; }
+.me.sending { opacity: .7; }
+.me.failed { background: rgba(255,100,116,.18); box-shadow: inset 0 0 0 1px rgba(255,100,116,.45); }
+.me.failed .t { color: #ff9aa4; }
+.gp { padding: 12px 16px 15px; border-radius: 24px; }
+.gp .hd { display: flex; align-items: center; gap: 9px; padding-bottom: 9px; margin-bottom: 10px; font-size: 13.5px; font-weight: 700; color: var(--acc2);
+  border-bottom: 1px solid rgba(255,255,255,.09); }
+.gp .hd .t { font-weight: 500; color: var(--dim); font-size: 12.5px; }
+.gp .tx { font-size: 15.5px; line-height: 1.5; overflow-wrap: anywhere; }
+.gp .tx code, .me code { font-size: .92em; padding: 1px 5px; border-radius: 6px; background: rgba(0,0,0,.28); }
+.gp.err { box-shadow: inset 0 1px 0 rgba(255,255,255,.2), inset 0 0 0 1px rgba(255,100,116,.4), 0 18px 40px rgba(0,0,0,.45); }
+.gp.err .hd { color: #ff9aa4; }
+.steps { font-size: 12.5px; color: var(--dim); margin-bottom: 6px; display: block; text-align: left; }
+.steps.solo { padding-left: 8px; margin: 0; }
+.tools { display: none; margin: -2px 0 8px; padding: 8px 10px; border-radius: 14px; background: rgba(0,0,0,.25); font-size: 12px; line-height: 1.6; color: var(--mut);
+  overflow-wrap: anywhere; }
+.tools.open { display: block; }
+.tools .bad { color: var(--red); }
+.atts { display: flex; flex-wrap: wrap; gap: 6px; margin-top: 8px; }
+.atts .chip { font-size: 12px; padding: 4px 9px; gap: 5px; }
+.sys { font-size: 12.5px; color: var(--dim); padding: 0 8px; line-height: 1.45; }
+.sys::before { content: "· "; color: var(--acc); }
+.sys.err { color: #ff9aa4; } .sys.err::before { color: var(--red); }
+.typing { font-size: 13.5px; color: var(--green); padding-left: 8px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.empty { align-self: center; text-align: center; font-size: 13.5px; color: var(--mut); line-height: 1.6; padding: 0 16px 20px; }
+.empty b { color: var(--amber); }
+
+.comp { position: absolute; left: 16px; right: 16px; bottom: calc(var(--tab-bottom) + var(--tab-h) + 14px); display: flex; align-items: flex-end; gap: 10px; z-index: 24; }
+.comp .plus { width: 50px; height: 50px; margin-bottom: 7px; border-radius: 50%; display: flex; align-items: center; justify-content: center; color: #fff; flex: none; }
+.comp .field { position: relative; flex: 1; min-width: 0; min-height: 50px; margin-bottom: 7px; border-radius: 25px; display: flex; align-items: flex-start;
+  padding: 0 16px 0 16px; font-size: 15.5px; }
+.comp .field b { color: var(--acc); margin-right: 9px; line-height: 50px; }
+.comp textarea { flex: 1; min-width: 0; resize: none; height: 50px; max-height: 132px; padding: 14px 0; line-height: 22px; font-size: 15.5px; caret-color: var(--acc2);
+  -webkit-user-select: text; user-select: text; overflow-y: auto; }
+.comp .ph { position: absolute; left: 41px; top: 0; line-height: 50px; color: var(--dim); pointer-events: none; white-space: nowrap; }
+.comp .field.typing-on .ph, .comp .field:focus-within .ph { display: none; }
+.comp .mic { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; color: var(--ink); background: #fff;
+  box-shadow: 0 10px 30px rgba(124,140,255,.55), 0 0 0 6px rgba(255,255,255,.08); transition: transform .12s; }
+.comp .mic:active { transform: scale(.94); }
+
+/* keyboard open: the composer rides on the keyboard, the tab bar steps aside */
+body.kb .tabbar { display: none; }
+body.kb .comp { bottom: calc(var(--kb) + 8px); }
+body.kb .msgs { bottom: calc(var(--kb) + 24px + var(--comp-h, 64px)); }
+
+/* ---------------------------------------------------------------- Waiting on you */
+.top { padding: 4px 20px 0; }
+.top .sub { font-size: 13.5px; color: var(--mut); margin-top: 3px; }
+.filters { display: flex; gap: 8px; padding: 12px 16px 2px; overflow-x: auto; scrollbar-width: none; }
+.filters .chip { font-size: 13.5px; padding: 8px 13px; flex: none; }
+.list { padding: 10px 14px; display: flex; flex-direction: column; gap: 10px; }
+.card { padding: 14px 16px 15px; transition: opacity .2s; }
+.card.busy { opacity: .55; pointer-events: none; }
+.card.gone { opacity: 0; transform: scale(.97); transition: opacity .25s, transform .25s; }
+.kind { display: flex; align-items: center; gap: 9px; margin-bottom: 10px; padding-bottom: 10px; font-size: 12.5px; color: var(--mut);
+  border-bottom: 1px solid rgba(255,255,255,.08); min-width: 0; }
+.kind .src { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.kind .when { margin-left: auto; color: var(--dim); flex: none; }
+.ttl { font-size: 17.5px; font-weight: 800; line-height: 1.35; letter-spacing: -.5px; overflow-wrap: anywhere; }
+.det { font-size: 13.5px; color: var(--mut); line-height: 1.5; margin-top: 6px; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.acts { display: flex; gap: 10px; margin-top: 13px; }
+.acts .btn { flex: 1; height: 48px; min-width: 0; padding: 0 12px; }
+.acts .btn.more { flex: 0 0 56px; padding: 0; }
+.pconly { margin-top: 12px; font-size: 13px; color: var(--dim); }
+.pconly b { color: var(--acc); }
+.mini { padding: 13px 13px 13px 16px; }
+.mini .kind { margin-bottom: 8px; padding-bottom: 0; border: none; }
+.mini .ttl { font-size: 15px; line-height: 1.35; }
+.mini .det { font-size: 12.5px; margin-top: 3px; display: -webkit-box; -webkit-line-clamp: 2; -webkit-box-orient: vertical; overflow: hidden; }
+.mini .rbs { display: flex; gap: 8px; flex: none; }
+.card.wa { box-shadow: inset 0 1px 0 rgba(255,200,120,.55), inset 0 0 0 1px rgba(255,179,71,.22), 0 18px 40px rgba(0,0,0,.45);
+  background: linear-gradient(180deg, rgba(255,179,71,.12), rgba(255,255,255,.05)); }
+.card.soon .det { margin-top: 8px; }
+.allclear { text-align: center; padding: 40px 20px; }
+.allclear .big { font-size: 40px; color: var(--green); margin-bottom: 8px; }
+.notice { margin: 0 14px; padding: 13px 16px; font-size: 13.5px; line-height: 1.5; color: var(--mut); }
+.notice b { color: var(--amber); }
+
+/* answer sheet */
+.answer .ttl { align-self: stretch; font-size: 16px; }
+.answer textarea { width: 100%; min-height: 110px; max-height: 40vh; padding: 14px 16px; border-radius: 22px; background: rgba(0,0,0,.25);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); font-size: 16px; line-height: 1.45; caret-color: var(--acc2); resize: none;
+  -webkit-user-select: text; user-select: text; }
+.answer textarea::placeholder { color: var(--dim); }
+.answer .choose { display: flex; gap: 8px; flex-wrap: wrap; align-self: stretch; }
+.answer .choose .chip { font-size: 13.5px; padding: 8px 13px; }
+.answer .count { align-self: flex-end; font-size: 11.5px; color: var(--dim); margin-top: -10px; }
+.answer .count.over { color: var(--red); }
+.answer .vrow .btn { flex: 1; }
+.confirm .vtext { font-size: 18px; }
+.confirm .ctext { font-size: 15px; font-weight: 500; color: var(--mut); margin-top: 8px; letter-spacing: 0; }
+
+/* ---------------------------------------------------------------- Status */
+.stat { padding: 4px 16px 0; display: flex; flex-direction: column; gap: 12px; }
+.stat .hdr { display: flex; align-items: center; justify-content: space-between; padding: 0 4px; gap: 10px; }
+.guard { display: flex; gap: 10px; align-items: center; font-size: 12.5px; color: var(--mut); padding: 11px 14px; border-radius: 20px; line-height: 1.45; }
+.guard b { color: var(--green); } .guard b.amber { color: var(--amber); }
+.crew { padding: 4px 16px; }
+.cr { display: flex; align-items: center; gap: 12px; padding: 9px 0; border-bottom: 1px solid rgba(255,255,255,.08); width: 100%; text-align: left; }
+.cr:last-child { border: none; }
+.cr .a { font-size: 14.5px; font-weight: 700; }
+.cr .a span { font-weight: 500; font-size: 13px; color: var(--dim); }
+.cr .b { font-size: 12.5px; color: var(--mut); margin-top: 2px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cr .ico { width: 38px; height: 38px; border-radius: 11px; display: flex; align-items: center; justify-content: center; flex: none;
+  background: rgba(124,140,255,.16); box-shadow: inset 0 0 0 1px rgba(124,140,255,.35); color: var(--acc2); }
+.cr .v { font-weight: 700; font-size: 14px; flex: none; }
+.pc { display: grid; grid-template-columns: 1fr 1fr 1fr; gap: 10px; }
+.tile { padding: 11px 13px; display: flex; flex-direction: column; gap: 3px; border-radius: 22px; min-width: 0; }
+.tile .v { font-size: 19px; font-weight: 800; letter-spacing: -.6px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.tile .k { font-size: 12px; color: var(--mut); display: flex; gap: 6px; align-items: center; }
+.held { display: flex; align-items: center; justify-content: center; gap: 9px; min-height: 48px; padding: 8px 16px; border-radius: 24px; text-align: center;
+  background: rgba(255,179,71,.12); color: #ffc46e; font-weight: 700; font-size: 14px; line-height: 1.4;
+  box-shadow: inset 0 0 0 1px rgba(255,179,71,.35), inset 0 1px 0 rgba(255,255,255,.12); }
+.foot { font-size: 11.5px; color: var(--dim); text-align: center; padding: 2px 0 6px; }
+
+/* ---------------------------------------------------------------- Pair with your PC (look D "Pair by QR")
+   Inside the app the camera preview runs under the page: html.camera makes everything but this overlay transparent.
+   Without a camera (desktop browser, before the camera starts) the mockup's dark "camera" glow stands in. */
+.pair { position: fixed; inset: 0; z-index: 50; overflow: hidden;
+  background: radial-gradient(300px 260px at 50% 46%, #33304d, #121120 75%), #0a0a16; }
+html.camera, html.camera body { background: transparent; }
+html.camera #app { visibility: hidden; }
+html.camera .pair { background: radial-gradient(130% 90% at 50% 52%, transparent 45%, rgba(8,8,20,.55)); }
+/* the web page's blur can't reach the native camera picture, so glass gets more body over it */
+html.camera .pair .g { background: linear-gradient(180deg, rgba(34,34,62,.66), rgba(14,14,30,.58)); }
+.pair .pr { position: absolute; left: 0; right: 0; top: var(--sat); padding: 8px 18px 0; }
+.pair .nav { display: flex; align-items: center; justify-content: space-between; font-size: 14px; margin-bottom: 8px; }
+.pair .nav .g { width: 44px; height: 44px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
+.pair .nav .g.on { background: #fff; color: var(--ink); }
+.pair .toptxt { padding: 14px 18px; border-radius: 24px; }
+.pair .pt { font-size: 23px; font-weight: 800; letter-spacing: -.9px; }
+.pair .stp { font-size: 13.5px; color: var(--mut); line-height: 1.6; margin-top: 8px; padding-top: 8px; border-top: 1px solid rgba(255,255,255,.09); }
+.pair .stp b { color: var(--tx); }
+.vf { position: absolute; left: 48px; right: 48px; top: calc(var(--sat) + 280px); height: 276px; pointer-events: none; }
+.vf .br { position: absolute; width: 56px; height: 56px; border: 5px solid #fff; }
+.vf .br.tl { left: 0; top: 0; border-right: none; border-bottom: none; border-radius: 22px 0 0 0; }
+.vf .br.tr { right: 0; top: 0; border-left: none; border-bottom: none; border-radius: 0 22px 0 0; }
+.vf .br.bl { left: 0; bottom: 0; border-right: none; border-top: none; border-radius: 0 0 0 22px; }
+.vf .br.brr { right: 0; bottom: 0; border-left: none; border-top: none; border-radius: 0 0 22px 0; }
+.vf .scan { position: absolute; left: 10px; right: 10px; top: 150px; height: 2px; border-radius: 2px; background: var(--acc);
+  box-shadow: 0 0 16px 3px rgba(124,140,255,.8); }
+.pair[data-state=scanning] .scan { animation: scanmove 2.6s ease-in-out infinite alternate; }
+.pair:not([data-state=scanning]):not([data-state=checking]):not([data-state=paired]) .scan { opacity: 0; }
+@keyframes scanmove { from { top: 24px; } to { top: 250px; } }
+@media (prefers-reduced-motion: reduce) { .pair[data-state=scanning] .scan { animation: none; } }
+@media (max-height: 760px) { .vf { top: calc(var(--sat) + 214px); height: 220px; left: 70px; right: 70px; } }
+.pair .found { position: absolute; left: 16px; right: 16px; bottom: calc(var(--sab) + 82px); padding: 14px 16px; display: flex; align-items: center; gap: 12px; }
+.pair .found .fi { width: 44px; height: 44px; border-radius: 50%; flex: none; display: flex; align-items: center; justify-content: center;
+  color: var(--acc2); background: rgba(124,140,255,.16); box-shadow: inset 0 0 0 1px rgba(124,140,255,.35); }
+.pair .found .a { font-size: 15.5px; font-weight: 800; color: var(--acc2); }
+.pair .found .b { font-size: 12.5px; color: var(--mut); margin-top: 3px; line-height: 1.45; }
+.pair .found.ok .fi { color: var(--green); background: rgba(75,224,143,.16); box-shadow: inset 0 0 0 1px rgba(75,224,143,.35); }
+.pair .found.ok .a { color: var(--green); }
+.pair .found.bad .fi { color: var(--red); background: rgba(255,100,116,.15); box-shadow: inset 0 0 0 1px rgba(255,100,116,.35); }
+.pair .found.bad .a { color: #ff9aa4; }
+.pair .found.warn .fi { color: var(--amber); background: rgba(255,179,71,.14); box-shadow: inset 0 0 0 1px rgba(255,179,71,.35); }
+.pair .found.warn .a { color: #ffc46e; }
+.pspin { width: 20px; height: 20px; border-radius: 50%; border: 2.5px solid rgba(163,173,255,.3); border-top-color: var(--acc2); animation: spin .8s linear infinite; }
+@keyframes spin { to { transform: rotate(360deg); } }
+.pair .pbtn { position: absolute; left: 16px; right: 16px; bottom: calc(var(--sab) + 10px); display: flex; gap: 10px; }
+.pair .pbtn .btn { flex: 1; min-width: 0; }
+
+/* "pair with your PC" buttons in the not-paired states, and the This phone sheet */
+.pairbtn { display: inline-flex; margin-top: 14px; height: 44px; font-size: 14px; }
+.phone .vtext { font-size: 16px; font-weight: 500; letter-spacing: 0; }
+.phone .vtext b { font-weight: 800; }
+.phone .ctext { font-size: 13px; color: var(--mut); margin-top: 10px; line-height: 1.5; }
+.phone .ctext.fqdn { margin-top: 4px; color: var(--acc2); overflow-wrap: anywhere; }
+.phone .btn { align-self: stretch; }
