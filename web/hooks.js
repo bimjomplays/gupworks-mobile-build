@@ -1,13 +1,14 @@
 /* The two places later builds plug native features into the web UI.
 
    GupHooks.confirmOwnerAction(req) -> Promise<confirm block | null>
-     EVERY owner decision (POST /v1/waiting/act) gets its `confirm` block from here and nowhere else. The Face ID
-     build replaces the body: ask the native side for Face ID (or the device passcode) for exactly this decision,
-     then return {key, action, method: 'face_id' | 'touch_id' | 'passcode', at: <when the check passed, PC clock>}.
-     Return null when the owner cancels or the check fails; the UI then sends nothing. Ask again on every retry.
-     req = {key, action, label, text, title} (title/label are for the prompt).
-     Until then: against the dev mock a glass sheet stands in for Face ID; against a real PC owner decisions are
-     refused here (no way to confirm yet), so they are made on the PC.
+     EVERY owner decision (POST /v1/waiting/act) gets its `confirm` block from here and nowhere else. In the iPhone
+     app the shell runs Face ID (or the device passcode) for exactly this decision (bridge op `confirm`) and answers
+     {key, action, method: 'face_id' | 'touch_id' | 'passcode', at: <when the check passed, PC clock>}. The shell
+     also remembers that block: it sends POST /v1/waiting/act only with a block it handed out, once, within 90 s, so
+     a confirmation can't be made up or reused here. null when the owner cancels or the check fails; the UI then
+     sends nothing. Asked again on every retry. req = {key, action, label, text, title}; the block is bound to the
+     answer text too (the shell sends it only with that text), and title names the decision in the passcode prompt. Against the dev mock a glass sheet stands in for Face ID; in a desktop browser against a real PC
+     owner decisions are refused (nothing can confirm them), so they are made on the PC.
 
    GupHooks.startVoice() -> Promise<string | null>
      The voice build replaces this: on-device speech-to-text, resolving the transcript (sent as text, the PC never
@@ -38,10 +39,30 @@
     });
   }
 
+  async function nativeConfirm(req) {
+    let r = null;
+    try {
+      r = await root.GupNative.call('confirm', {
+        key: req.key, action: req.action, text: req.text || '', title: req.title || req.key,
+        clockOffsetMs: root.GupAPI.serverNow().getTime() - Date.now(),
+      });
+    } catch (e) { /* locked meanwhile: nothing to decide */ }
+    const c = r && r.confirm;
+    if (c && c.key === req.key && c.action === req.action) return c;
+    const why = {
+      failed: 'Face ID didn\'t pass, so nothing was decided.',
+      no_passcode: 'Set a passcode on this iPhone first: decisions need Face ID or the passcode.',
+      busy: 'Another check is still open.',
+    }[r && r.error];
+    if (why) toast(esc(why), 'bad');
+    return null;
+  }
+
   const GupHooks = {
     async confirmOwnerAction(req) {
       if (root.GupAPI.mode === 'mock') return devConfirm(req);
-      toast('Deciding from the phone needs Face ID, which isn\'t in this build yet. Decide it on the PC for now.', 'bad');
+      if (root.GupNative.available) return nativeConfirm(req);
+      toast('Deciding needs Face ID in the GupWorks iPhone app. Decide this one on the PC.', 'bad');
       return null;
     },
     async startVoice() {

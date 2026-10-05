@@ -196,3 +196,24 @@ html.camera .pair .g { background: linear-gradient(180deg, rgba(34,34,62,.66), r
 .phone .ctext { font-size: 13px; color: var(--mut); margin-top: 10px; line-height: 1.5; }
 .phone .ctext.fqdn { margin-top: 4px; color: var(--acc2); overflow-wrap: anywhere; }
 .phone .btn { align-self: stretch; }
+
+/* ---------------------------------------------------------------- app lock (look D "Face ID lock", mockup 4)
+   Inside the app the page starts locked; everything but the lock screen is hidden until Face ID or the passcode
+   passes (lock.js; the shell refuses PC calls meanwhile). */
+html.locked #app, html.locked .pair, html.locked .dimmer, html.locked .vsheet, html.locked .toast { visibility: hidden; }
+.lock { position: fixed; inset: 0; z-index: 65; background: var(--bg); overflow: hidden; }
+.lock .lk { display: flex; flex-direction: column; align-items: center; padding-top: calc(var(--sat) + 86px); }
+.lock .brand { font-size: 36px; font-weight: 800; letter-spacing: -1.4px; margin-top: 24px; }
+.lock .brand::before { content: "› "; color: var(--acc); }
+.lock .sub { display: flex; align-items: center; gap: 7px; font-size: 14.5px; color: var(--mut); margin-top: 8px; }
+.lock .fid { margin-top: 76px; width: 140px; height: 140px; border-radius: 50%; display: flex; align-items: center;
+  justify-content: center; color: #fff; transition: transform .12s; }
+.lock .fid:active { transform: scale(.96); }
+.lock[data-state=checking] .fid { animation: fidpulse 1.6s ease-in-out infinite; }
+@keyframes fidpulse { 50% { box-shadow: inset 0 1px 0 rgba(255,255,255,.26), inset 0 0 0 1px rgba(163,173,255,.5), 0 0 34px rgba(124,140,255,.35); } }
+@media (prefers-reduced-motion: reduce) { .lock[data-state=checking] .fid { animation: none; } }
+.lock .hint { font-size: 15.5px; font-weight: 600; margin-top: 24px; text-align: center; padding: 0 24px; }
+.lock .hint.bad { color: #ff9aa4; }
+.lock .pill { margin-top: 40px; display: flex; gap: 10px; align-items: center; padding: 11px 18px; border-radius: 99px; font-size: 14px; }
+.lock .pin { position: absolute; left: 28px; right: 28px; bottom: calc(var(--sab) + 38px); }
+.lock .pin .btn { width: 100%; }

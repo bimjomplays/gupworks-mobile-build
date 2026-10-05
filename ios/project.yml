@@ -40,6 +40,9 @@ targets:
         # pairing: the app scans the QR code the PC shows (the camera picture never leaves the phone)
         NSCameraUsageDescription: >-
           GupWorks uses the camera only to scan the pairing code your PC shows. Nothing is recorded or sent anywhere.
+        # app lock and owner decisions (iOS checks the face; the app only hears "passed" or "not")
+        NSFaceIDUsageDescription: >-
+          GupWorks uses Face ID to unlock the app and to confirm each decision you make for your PC.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.gupworks.mobile

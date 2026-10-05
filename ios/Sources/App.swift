@@ -33,9 +33,15 @@ final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
 /// itself ignores the safe area. Links to http(s) sites open in Safari; everything else outside web/ is refused.
 /// The page talks to the PC through NativeBridge (the token stays native); while pairing, the camera preview sits
 /// under the web view and the web view turns transparent.
+/// App lock: the bridge starts locked and locks again when the app goes to the background. A plain cover (the launch
+/// screen colour) hides the page whenever the app isn't in front (so the app switcher's picture shows nothing) and
+/// stays until the page has taken in the lock state; then Face ID comes up by itself.
 final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate, BridgeHost {
     private var webView: WKWebView!
     private lazy var bridge = NativeBridge()
+    private let cover = UIView()
+    /// the page has loaded (so it can draw its lock screen)
+    private var pageReady = false
     /// web/ inside the app bundle; nil only if the build left it out
     private let webRoot = Bundle.main.url(forResource: "web", withExtension: nil)
     private let background = UIColor(named: "LaunchBG") ?? .black
@@ -71,13 +77,45 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         bridge.isTrustedPage = { [weak self] url in self?.isInsideWebRoot(url) ?? false }
         let root = UIView()
         root.backgroundColor = background
-        for v in [bridge.scanner.previewView, webView!] as [UIView] {
+        cover.backgroundColor = background
+        for v in [bridge.scanner.previewView, webView!, cover] as [UIView] {
             v.frame = root.bounds
             v.autoresizingMask = [.flexibleWidth, .flexibleHeight]
             root.addSubview(v)
         }
         view = root
     }
+
+    // MARK: - app lock
+
+    @objc private func sceneWillDeactivate() {
+        // a Face ID prompt makes the app inactive for a moment too; the owner hasn't left then
+        if !bridge.auth.busy { cover.isHidden = false }
+    }
+
+    @objc private func sceneDidEnterBackground() {
+        cover.isHidden = false
+        bridge.lock()
+    }
+
+    @objc private func sceneDidActivate() {
+        reveal()
+    }
+
+    /// In front with a loaded page: let the page take in the lock state, give it a frame to draw it, then lift the
+    /// cover and (still locked) bring up Face ID.
+    private func reveal() {
+        guard pageReady, isInFront else { return }
+        bridge.syncLock { [weak self] in
+            DispatchQueue.main.asyncAfter(deadline: .now() + 0.1) {
+                guard let self, self.pageReady, self.isInFront else { return }
+                self.cover.isHidden = true
+                self.bridge.autoUnlock()
+            }
+        }
+    }
+
+    private var isInFront: Bool { view.window?.windowScene?.activationState == .foregroundActive }
 
     // MARK: - BridgeHost
 
@@ -95,10 +133,16 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
 
     override func viewDidLoad() {
         super.viewDidLoad()
+        let nc = NotificationCenter.default
+        nc.addObserver(self, selector: #selector(sceneWillDeactivate), name: UIScene.willDeactivateNotification, object: nil)
+        nc.addObserver(self, selector: #selector(sceneDidEnterBackground), name: UIScene.didEnterBackgroundNotification, object: nil)
+        nc.addObserver(self, selector: #selector(sceneDidActivate), name: UIScene.didActivateNotification, object: nil)
         loadHome()
     }
 
     private func loadHome() {
+        pageReady = false
+        cover.isHidden = false
         bridge.pageWillReload()
         guard let root = webRoot else { return showMissingUI() }
         let index = root.appendingPathComponent("index.html")
@@ -134,6 +178,11 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
             UIApplication.shared.open(url)
         }
         decisionHandler(.cancel)
+    }
+
+    func webView(_ webView: WKWebView, didFinish navigation: WKNavigation!) {
+        pageReady = true
+        reveal()
     }
 
     /// iOS can kill the page's process in the background (memory pressure); start it again instead of a blank screen

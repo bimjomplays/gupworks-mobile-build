@@ -11,6 +11,8 @@
 <title>GupWorks</title>
 <link rel="stylesheet" href="look.css">
 <link rel="stylesheet" href="app.css">
+<!-- in the app nothing of the page is drawn before the shell says it's unlocked (lock.js takes over from here) -->
+<script>if (window.webkit && window.webkit.messageHandlers && window.webkit.messageHandlers.gup) document.documentElement.classList.add('locked');</script>
 </head>
 <body>
 <div id="app">
@@ -82,11 +84,25 @@
   </div>
 </section>
 
+<!-- App lock (look D "Face ID lock"): inside the app this is up until Face ID or the passcode passes (lock.js) -->
+<section class="lock hidden" id="lock" aria-label="GupWorks is locked">
+  <div class="lk">
+    <span id="lock-bot"></span>
+    <div class="brand">gupworks</div>
+    <div class="sub" id="lock-sub"></div>
+    <button class="fid g" id="lock-fid" type="button" aria-label="Unlock"></button>
+    <div class="hint" id="lock-hint" role="status"></div>
+    <div class="pill g hidden" id="lock-pill"></div>
+  </div>
+  <div class="pin"><button class="btn q" id="lock-pin" type="button">use passcode</button></div>
+</section>
+
 <script src="api.js"></script>
 <script src="native.js"></script>
 <script src="ui.js"></script>
 <script src="hooks.js"></script>
 <script src="pair.js"></script>
+<script src="lock.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

@@ -1,7 +1,8 @@
 /* The iOS shell's bridge (ios/Sources/NativeBridge.swift), as seen from the page.
      GupNative.available        true inside the app (window.webkit.messageHandlers.gup exists)
      GupNative.call(op, args)   -> Promise of the native answer
-     GupNative.on(name, fn)     native events (pair: {state: checking | paired | failed, ...}); returns an unsubscribe
+     GupNative.on(name, fn)     native events (pair: {state: checking | paired | failed, ...}; lock: {locked, state,
+                                biometry}, see lock.js); returns an unsubscribe
      GupNative.transport        a GupAPI transport: the shell adds the PC address and the token and does the request
    The page never gets the token or the full PC address: it only asks for API paths. */
 (function (root) {
@@ -36,7 +37,8 @@
     if (!r || r.error) {
       const code = (r && r.error) || 'unreachable';
       const text = { timeout: 'The PC took too long to answer', aborted: 'aborted', not_paired: 'This phone isn\'t paired with a PC yet',
-                     bad_request: 'The app asked for something the PC API doesn\'t have' }[code] || 'PC not reachable';
+                     bad_request: 'The app asked for something the PC API doesn\'t have',
+                     locked: 'GupWorks is locked' }[code] || 'PC not reachable';
       throw new ApiError(0, code, text);
     }
     let json = null;

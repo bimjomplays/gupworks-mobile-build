@@ -3,11 +3,12 @@
    (hooks.js) and nowhere else.
    Starting: inside the iOS app, boot() asks the shell (native.js) whether a PC is paired; if so every call goes
    through the shell's transport (the token stays native), else the pairing screen (pair.js) opens. A desktop
-   browser has no shell: nothing is paired there. Dev: ?mock runs on the in-page fake PC (mock.js), ?mock=server on
+   browser has no shell: nothing is paired there. The app lock (lock.js) comes first: while the shell says locked
+   nothing starts and the screens stay hidden; unlocking asks the shell again. Dev: ?mock runs on the in-page fake PC (mock.js), ?mock=server on
    scripts/mock-phone-api.js. */
 (function (root) {
   'use strict';
-  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair;
+  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair, Lock = root.GupLock;
   const { ic, bot, ring, esc, fmtText, when, clock, ago, cap, toast, sheet } = root.GupUI;
   const $ = id => document.getElementById(id);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -559,6 +560,8 @@
   async function askShell(openIfUnpaired) {
     let hello = null;
     try { hello = await N.call('hello'); } catch (e) { /* an older shell: nothing paired */ }
+    if (hello && hello.locked) return Lock.show(hello);
+    Lock.hide();
     if (hello && hello.paired) usePaired(hello);
     start();
     if (openIfUnpaired && !(hello && hello.paired) && hello && hello.keychain !== 'locked') openPairing();
@@ -568,6 +571,7 @@
   function stop() { if (S.runCtl) { S.runCtl.abort(); S.runCtl = null; } }
   function start() {
     stop();
+    if (Lock.isLocked) return;                          // the shell refuses PC calls while locked anyway
     if (!API.configured) { setConn('unpaired'); renderChat(); renderWaiting(); renderStatus(); return; }
     S.conn = 'connecting';
     renderConn();
@@ -588,11 +592,22 @@
   // the app went to the background and back: long-polls may have died, start them fresh
   document.addEventListener('visibilitychange', () => {
     if (document.hidden) stop();
+    else if (Lock.isLocked) return;
     else if (API.configured && !API.unauthorized) start();
     else if (N.available && !API.configured && !Pair.isOpen && params.get('mock') === null) askShell(false);
   });
   // a pairing that finished after its screen was closed still counts
   N.on('pair', e => { if (e.state === 'paired' && !Pair.isOpen) onPaired(e); });
+  // the shell locked (the app went to the background) or Face ID / the passcode passed
+  N.on('lock', e => {
+    if (e.locked) {
+      if (!Lock.isLocked) { stop(); if (Pair.isOpen) Pair.close(); }
+      Lock.show(e);
+    } else if (Lock.isLocked) {
+      Lock.hide();                                      // at once: the shell says "unlocked" twice (unlock + sync)
+      askShell(true);
+    }
+  });
 
   // ---------------------------------------------------------------- keyboard: lift the composer above it
   if (root.visualViewport) {

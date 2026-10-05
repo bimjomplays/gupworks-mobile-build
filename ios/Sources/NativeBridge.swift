@@ -9,6 +9,17 @@ protocol BridgeHost: AnyObject {
     func presentNative(_ vc: UIViewController)
 }
 
+/// A confirm block this bridge handed out after Face ID / the passcode passed. POST /v1/waiting/act only goes to the
+/// PC with one of these, once, within its time: the page can't make up a confirmation, or reuse one.
+private struct IssuedConfirm {
+    let key: String
+    let action: String
+    let method: String
+    let at: String
+    let text: String
+    let expires: Date
+}
+
 /// The web UI's way to the PC and to the pairing. The page calls
 ///     window.webkit.messageHandlers.gup.postMessage({op, ...})  -> Promise (web/native.js wraps it)
 /// and gets events back through GupNative._event(name, data).
@@ -17,9 +28,16 @@ protocol BridgeHost: AnyObject {
 /// adds the base URL and the bearer token, does the request with URLSession and hands back {status, body}. The page
 /// never sees the token, so nothing in JavaScript (or web storage, or a web inspector) can leak it.
 ///
+/// The app lock (Face ID slice): the bridge starts locked and locks again whenever the app goes to the background.
+/// While locked only hello / unlock / lock.peek / cancel / settings answer; every PC request is refused. Owner
+/// decisions need a fresh Face ID (or passcode) check each time: `confirm` runs it and hands out a one-time confirm
+/// block, and a POST /v1/waiting/act without such a block never leaves the phone.
+///
 /// ops: hello · request {id, method, path, query, body, timeoutMs} · cancel {id} · pair.start · pair.stop ·
-///      pair.torch {on} · pair.enter · pair.forget · settings
-/// events: pair {state: checking | paired | failed, ...}
+///      pair.torch {on} · pair.enter · pair.forget · settings · unlock {passcode} · lock.peek ·
+///      confirm {key, action, label, title, clockOffsetMs}
+/// events: pair {state: checking | paired | failed, ...} ·
+///         lock {locked, state: idle | checking | cancelled | failed | no_passcode, biometry, passcode}
 @MainActor
 final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     static let name = "gup"
@@ -37,7 +55,19 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var scanGeneration = 0
     private var scanning = false
     private var checking = false
+    /// the "enter code instead" field, closed when the app locks
+    private weak var codeAlert: UIAlertController?
     private var rejected: (text: String, until: Date)?
+
+    let auth = OwnerAuth()
+    private(set) var locked = true
+    /// Face ID came up by itself once for this lock; after a cancel the owner taps to try again
+    private var autoPrompted = false
+    /// bumped by every lock(): a check that finishes after the app was locked again counts for nothing
+    private var lockGeneration = 0
+    private var lockState = "idle"
+    private var issued: [IssuedConfirm] = []
+    private static let confirmLife: TimeInterval = 90          // the PC takes confirmations up to 2 min old
     private lazy var session: URLSession = {
         let c = URLSessionConfiguration.ephemeral          // no cookies, cache or credentials on disk
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -62,9 +92,32 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
               let body = message.body as? [String: Any], let op = body["op"] as? String else {
             return replyHandler(nil, "refused")
         }
+        if locked && !["hello", "unlock", "lock.peek", "cancel", "settings"].contains(op) {
+            return op == "request" ? replyHandler(["error": "locked"], nil) : replyHandler(nil, "locked")
+        }
         switch op {
         case "hello":
             replyHandler(hello(), nil)
+        case "unlock":
+            Task { replyHandler(await self.unlock(passcodeFirst: (body["passcode"] as? Bool) ?? false), nil) }
+        case "lock.peek":
+            Task { replyHandler(await self.peek(), nil) }
+        case "confirm":
+            guard let key = body["key"] as? String, let action = body["action"] as? String,
+                  !key.isEmpty, key.count <= 200, !action.isEmpty, action.count <= 64 else {
+                return replyHandler(["error": "bad_request"], nil)
+            }
+            // the answer text is part of the decision: the block only goes out with exactly this text
+            let text = ((body["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let title = String(((body["title"] as? String) ?? key).prefix(120))
+            let offset = max(-86_400_000, min(86_400_000, (body["clockOffsetMs"] as? Double) ?? 0))
+            // the prompt names the action the block is for (not a label the page picked); Face ID shows no text,
+            // the passcode and Touch ID sheets do
+            let reason = "\(action) · \(title)"
+            Task {
+                replyHandler(await self.confirm(key: key, action: action, text: text, reason: reason,
+                                                offsetMs: offset), nil)
+            }
         case "request":
             guard let id = body["id"] as? Int else { return replyHandler(nil, "bad request") }
             tasks[id]?.task.cancel()
@@ -115,13 +168,135 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     }
 
     private func hello() -> [String: Any] {
+        if locked { return lockInfo() }
         do {
             pairing = try PairingStore.load()
         } catch {
             return ["native": 1, "paired": false, "keychain": "locked"]
         }
         guard let p = pairing else { return ["native": 1, "paired": false] }
-        return ["native": 1, "paired": true, "host": p.shortHost, "fqdn": p.baseURL.host ?? "", "pairedAt": iso(p.pairedAt)]
+        return ["native": 1, "locked": false, "paired": true, "host": p.shortHost, "fqdn": p.baseURL.host ?? "",
+                "pairedAt": iso(p.pairedAt)]
+    }
+
+    // MARK: - app lock
+
+    private func lockInfo() -> [String: Any] {
+        let caps = OwnerAuth.capabilities()
+        return ["native": 1, "locked": locked, "state": lockState, "biometry": caps.biometry, "passcode": caps.passcode]
+    }
+
+    private func setLockState(_ state: String) {
+        lockState = state
+        emit("lock", lockInfo())
+    }
+
+    /// The app went to the background: lock, stop everything in flight, forget unused confirmations.
+    func lock() {
+        lockGeneration += 1
+        auth.cancel()
+        autoPrompted = false
+        issued.removeAll()
+        codeAlert?.dismiss(animated: false)
+        if !locked {
+            locked = true
+            cancelAll()
+            stopScanning()
+        }
+        setLockState("idle")
+    }
+
+    /// Tells the page the lock state again; done runs once the page has taken it in.
+    func syncLock(_ done: @escaping () -> Void) {
+        emit("lock", lockInfo(), done: done)
+    }
+
+    /// The app is on screen and locked: Face ID comes up by itself, once per lock.
+    func autoUnlock() {
+        guard locked, !autoPrompted, !auth.busy else { return }
+        Task { _ = await unlock(passcodeFirst: false) }
+    }
+
+    private func unlock(passcodeFirst: Bool) async -> [String: Any] {
+        guard locked else { return ["unlocked": true] }
+        guard !auth.busy else { return ["unlocked": false, "reason": "busy"] }
+        autoPrompted = true
+        let generation = lockGeneration
+        setLockState("checking")
+        let out = await auth.run(reason: "Unlock GupWorks", passcodeFirst: passcodeFirst)
+        guard generation == lockGeneration, locked else { return ["unlocked": !locked] }
+        let state: String
+        switch out {
+        case .passed:
+            locked = false
+            setLockState("idle")
+            return ["unlocked": true]
+        case .cancelled, .busy: state = "cancelled"
+        case .failed: state = "failed"
+        case .noPasscode: state = "no_passcode"
+        }
+        setLockState(state)
+        return ["unlocked": false, "reason": state]
+    }
+
+    /// The lock screen's one line about the PC: how many things wait on the owner (a number, nothing else).
+    private func peek() async -> [String: Any] {
+        guard let p = try? PairingStore.load() else { return [:] }
+        let out = await send(base: p.baseURL, token: p.pendingToken ?? p.token, method: "GET", path: "/v1/status",
+                             query: [:], body: nil, timeout: 10)
+        guard out.status == 200, let body = out.body,
+              let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let waiting = json["waiting"] as? Int else { return [:] }
+        return ["waiting": waiting]
+    }
+
+    // MARK: - owner decisions
+
+    /// Face ID (or the passcode) for exactly this decision, then a confirm block the request gate takes once.
+    private func confirm(key: String, action: String, text: String, reason: String,
+                         offsetMs: Double) async -> [String: Any] {
+        let generation = lockGeneration
+        let out = await auth.run(reason: reason)
+        guard generation == lockGeneration, !locked else { return ["error": "cancelled"] }
+        switch out {
+        case .passed(let method):
+            // the contract's own form (docs/phone-api.md): seconds, +00:00
+            let f = DateFormatter()
+            f.locale = Locale(identifier: "en_US_POSIX")
+            f.timeZone = TimeZone(identifier: "UTC")
+            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxxxx"
+            let at = f.string(from: Date().addingTimeInterval(offsetMs / 1000))
+            issued.removeAll { $0.expires < Date() }
+            issued.append(IssuedConfirm(key: key, action: action, method: method, at: at, text: text,
+                                        expires: Date().addingTimeInterval(Self.confirmLife)))
+            return ["confirm": ["key": key, "action": action, "method": method, "at": at]]
+        case .cancelled: return ["error": "cancelled"]
+        case .failed: return ["error": "failed"]
+        case .noPasscode: return ["error": "no_passcode"]
+        case .busy: return ["error": "busy"]
+        }
+    }
+
+    /// POST /v1/waiting/act: only a body whose key, action, text and confirm block match a confirmation this bridge
+    /// handed out (which is then used up). Returns the body to send, built again from exactly what was checked (so
+    /// the PC can't read a different decision out of the same bytes), or nil.
+    private func takeConfirmation(_ body: Data?) -> Data? {
+        guard let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let key = json["key"] as? String, let action = json["action"] as? String,
+              let c = json["confirm"] as? [String: Any], c.count == 4,
+              c["key"] as? String == key, c["action"] as? String == action,
+              let method = c["method"] as? String, let at = c["at"] as? String else { return nil }
+        if json["text"] != nil && !(json["text"] is String) { return nil }
+        let text = ((json["text"] as? String) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+        issued.removeAll { $0.expires < Date() }
+        guard let i = issued.firstIndex(where: {
+            $0.key == key && $0.action == action && $0.method == method && $0.at == at && $0.text == text
+        }) else { return nil }
+        issued.remove(at: i)
+        var out: [String: Any] = ["key": key, "action": action,
+                                  "confirm": ["key": key, "action": action, "method": method, "at": at]]
+        if !text.isEmpty { out["text"] = text }
+        return try? JSONSerialization.data(withJSONObject: out)
     }
 
     // MARK: - API requests
@@ -131,8 +306,16 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         guard let method = a["method"] as? String, method == "GET" || method == "POST",
               let path = a["path"] as? String, Self.isApiPath(path) else { return ["error": "bad_request"] }
         let query = (a["query"] as? [String: Any] ?? [:]).compactMapValues { $0 as? String }
-        let body = (a["body"] as? String).map { Data($0.utf8) }
+        var body = (a["body"] as? String).map { Data($0.utf8) }
         if let body, body.count > 64 * 1024 { return ["error": "bad_request"] }
+        if path == "/v1/waiting/act" {
+            // never sent: an owner decision without this phone's own Face ID check for exactly it
+            guard method == "POST", let checked = takeConfirmation(body) else {
+                return ["status": 428,
+                        "body": #"{"error":{"code":"confirmation_required","message":"Confirm this decision with Face ID first."}}"#]
+            }
+            body = checked
+        }
         let timeout = max(1, min(120, ((a["timeoutMs"] as? Double) ?? 15000) / 1000))
 
         let rotating = method == "POST" && path == "/v1/auth/rotate"
@@ -283,11 +466,12 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         alert.addAction(UIAlertAction(title: "Pair", style: .default) { [weak self, weak alert] _ in
             if let text = alert?.textFields?.first?.text, !text.isEmpty { self?.handleCode(text, fromCamera: false) }
         })
+        codeAlert = alert
         host?.presentNative(alert)
     }
 
     private func handleCode(_ text: String, fromCamera: Bool) {
-        if fromCamera && !scanning { return }
+        if locked || (fromCamera && !scanning) { return }
         guard !checking else { return }
         // the same failed code stays in view: say it once, then give the owner a moment before trying it again
         if fromCamera, let r = rejected, r.text == text, Date() < r.until { return }
@@ -343,11 +527,12 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     // MARK: - events to the page
 
-    private func emit(_ name: String, _ data: [String: Any]) {
+    private func emit(_ name: String, _ data: [String: Any], done: (() -> Void)? = nil) {
         guard let json = try? JSONSerialization.data(withJSONObject: data),
-              let name = try? JSONSerialization.data(withJSONObject: [name]) else { return }
-        let js = "window.GupNative && GupNative._event(\(String(decoding: name, as: UTF8.self))[0], \(String(decoding: json, as: UTF8.self)))"
-        webView?.evaluateJavaScript(js, completionHandler: nil)
+              let name = try? JSONSerialization.data(withJSONObject: [name]), let webView else { done?(); return }
+        // `; true`: the script's value must be something WebKit can hand back, or the completion reports an error
+        let js = "window.GupNative && GupNative._event(\(String(decoding: name, as: UTF8.self))[0], \(String(decoding: json, as: UTF8.self))); true"
+        webView.evaluateJavaScript(js) { _, _ in done?() }
     }
 
     private func iso(_ d: Date) -> String {
