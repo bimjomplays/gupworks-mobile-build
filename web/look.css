@@ -128,6 +128,14 @@ h1::before { content: "› "; color: var(--acc); }
 .vrow { display: flex; align-items: center; justify-content: space-between; width: 100%; padding: 0 4px; gap: 10px; }
 .vside { width: 62px; height: 62px; border-radius: 50%; display: flex; align-items: center; justify-content: center; }
 .vnote { font-size: 12.5px; color: var(--dim); text-align: center; line-height: 1.5; }
+.vbig:active, .vside:active { transform: scale(.95); }
+.vbig[disabled], .vside[disabled] { opacity: .45; pointer-events: none; }
+/* the voice sheet (voice.js): centred title, live waveform, a message box when it can't listen */
+.vsheet.voice { padding-bottom: 32px; }
+.vsheet.voice .vtitle { align-self: center; }
+.vsheet.voice .wave i { transition: height .07s linear; }
+.vtext.msg { font-size: 15px; font-weight: 500; line-height: 1.55; letter-spacing: 0; color: var(--mut); }
+.vsheet.voice .vrow .btn { flex: 1; }
 @keyframes fade { from { opacity: 0; } }
 @keyframes rise { from { transform: translateY(40px); opacity: 0; } }
 

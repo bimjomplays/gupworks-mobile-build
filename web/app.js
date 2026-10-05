@@ -642,8 +642,13 @@
     });
     $('mic').addEventListener('click', async () => {
       if (input.value.trim()) return sendFromInput();
-      const text = await H.startVoice();
-      if (text) { input.value = text; syncComposer(); sendFromInput(); }
+      // talking: the words fill the box as they come; sent (as text) only when the owner taps send
+      const before = input.value;
+      input.blur();                                       // the sheet, not the keyboard
+      const r = await H.startVoice({ onText: t => { input.value = t; syncComposer(); } });
+      input.value = r ? r.text : before;
+      syncComposer();
+      if (r && r.send) sendFromInput();
     });
     $('plus').addEventListener('click', () => toast('Sending files from the phone isn\'t supported yet.'));
     $('msgs').addEventListener('scroll', () => {

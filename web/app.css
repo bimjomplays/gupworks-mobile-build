@@ -66,6 +66,8 @@
 .comp .mic { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; color: var(--ink); background: #fff;
   box-shadow: 0 10px 30px rgba(124,140,255,.55), 0 0 0 6px rgba(255,255,255,.08); transition: transform .12s; }
 .comp .mic:active { transform: scale(.94); }
+/* the voice sheet stands in for the composer while it is open (the white mic would glow through the glass) */
+html.voice .comp { visibility: hidden; }
 
 /* keyboard open: the composer rides on the keyboard, the tab bar steps aside */
 body.kb .tabbar { display: none; }

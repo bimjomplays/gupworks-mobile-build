@@ -10,9 +10,11 @@
      answer text too (the shell sends it only with that text), and title names the decision in the passcode prompt. Against the dev mock a glass sheet stands in for Face ID; in a desktop browser against a real PC
      owner decisions are refused (nothing can confirm them), so they are made on the PC.
 
-   GupHooks.startVoice() -> Promise<string | null>
-     The voice build replaces this: on-device speech-to-text, resolving the transcript (sent as text, the PC never
-     gets audio) or null if cancelled. Until then the mic button only says it isn't ready. */
+   GupHooks.startVoice({onText}) -> Promise<{text, send} | null>
+     The chat's mic: on-device speech-to-text in the voice sheet (voice.js). The words go into the chat box as they
+     come (onText); it resolves the final text with send true (the owner tapped the send arrow) or false (keep it in
+     the box to edit), or null when cancelled. The PC only ever gets the text, sent like a typed message; no audio
+     leaves the phone. */
 (function (root) {
   'use strict';
   const { ic, esc, sheet, toast } = root.GupUI;
@@ -65,9 +67,8 @@
       toast('Deciding needs Face ID in the GupWorks iPhone app. Decide this one on the PC.', 'bad');
       return null;
     },
-    async startVoice() {
-      toast('Voice input isn\'t in this build yet: type your message for now.');
-      return null;
+    startVoice(opts) {
+      return root.GupVoice.open(opts);
     },
   };
   root.GupHooks = GupHooks;

@@ -43,6 +43,13 @@ targets:
         # app lock and owner decisions (iOS checks the face; the app only hears "passed" or "not")
         NSFaceIDUsageDescription: >-
           GupWorks uses Face ID to unlock the app and to confirm each decision you make for your PC.
+        # voice input in Gup chat: the microphone feeds on-device speech recognition only (no audio leaves the phone)
+        NSMicrophoneUsageDescription: >-
+          GupWorks listens only while the voice sheet in Gup chat is open, to turn what you say into text. Nothing is
+          recorded, and no audio leaves your iPhone.
+        NSSpeechRecognitionUsageDescription: >-
+          GupWorks turns your voice into text on this iPhone (on-device speech recognition) so you can talk to Gup.
+          Only the text you choose to send goes to your PC.
     settings:
       base:
         PRODUCT_BUNDLE_IDENTIFIER: app.gupworks.mobile

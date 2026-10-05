@@ -33,11 +33,15 @@ private struct IssuedConfirm {
 /// decisions need a fresh Face ID (or passcode) check each time: `confirm` runs it and hands out a one-time confirm
 /// block, and a POST /v1/waiting/act without such a block never leaves the phone.
 ///
+/// Voice input (VoiceInput): on-device speech-to-text only; the page gets the words, never audio, and sends what the
+/// owner chooses as an ordinary chat message. Locking or reloading drops a dictation.
+///
 /// ops: hello · request {id, method, path, query, body, timeoutMs} · cancel {id} · pair.start · pair.stop ·
 ///      pair.torch {on} · pair.enter · pair.forget · settings · unlock {passcode} · lock.peek ·
-///      confirm {key, action, label, title, clockOffsetMs}
+///      confirm {key, action, label, title, clockOffsetMs} · voice.start {tag} · voice.stop · voice.cancel
 /// events: pair {state: checking | paired | failed, ...} ·
-///         lock {locked, state: idle | checking | cancelled | failed | no_passcode, biometry, passcode}
+///         lock {locked, state: idle | checking | cancelled | failed | no_passcode, biometry, passcode} ·
+///         voice {tag, state: listening | stopped, text, reason} or {tag, level}
 @MainActor
 final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     static let name = "gup"
@@ -45,6 +49,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     weak var webView: WKWebView?
     weak var host: BridgeHost?
     let scanner = QRScanner()
+    let voice = VoiceInput()
     /// true when a message comes from the app's own page (main frame, a file inside the bundled web/)
     var isTrustedPage: (URL) -> Bool = { _ in false }
 
@@ -82,6 +87,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     override init() {
         super.init()
         scanner.onCode = { [weak self] text in self?.handleCode(text, fromCamera: true) }
+        voice.onEvent = { [weak self] event in self?.emit("voice", event) }
     }
 
     // MARK: - messages from the page
@@ -148,6 +154,14 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             PairingStore.clear()
             pairing = nil
             replyHandler(["paired": false], nil)
+        case "voice.start":
+            guard let tag = body["tag"] as? Int else { return replyHandler(["error": "bad_request"], nil) }
+            voice.start(tag: tag) { replyHandler($0, nil) }
+        case "voice.stop":
+            voice.stop { replyHandler(["text": $0], nil) }
+        case "voice.cancel":
+            voice.cancel()
+            replyHandler(nil, nil)
         case "settings":
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
             replyHandler(nil, nil)
@@ -160,6 +174,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     func pageWillReload() {
         cancelAll()
         stopScanning()
+        voice.cancel()
     }
 
     private func cancelAll() {
@@ -198,6 +213,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         autoPrompted = false
         issued.removeAll()
         codeAlert?.dismiss(animated: false)
+        voice.cancel()
         if !locked {
             locked = true
             cancelAll()
