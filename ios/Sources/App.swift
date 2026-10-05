@@ -1,0 +1,139 @@
+import UIKit
+import WebKit
+
+@main
+final class AppDelegate: UIResponder, UIApplicationDelegate {
+    func application(_ application: UIApplication,
+                     didFinishLaunchingWithOptions launchOptions: [UIApplication.LaunchOptionsKey: Any]? = nil) -> Bool {
+        true
+    }
+
+    func application(_ application: UIApplication,
+                     configurationForConnecting session: UISceneSession,
+                     options: UIScene.ConnectionOptions) -> UISceneConfiguration {
+        UISceneConfiguration(name: "Default", sessionRole: session.role)
+    }
+}
+
+final class SceneDelegate: UIResponder, UIWindowSceneDelegate {
+    var window: UIWindow?
+
+    func scene(_ scene: UIScene, willConnectTo session: UISceneSession, options: UIScene.ConnectionOptions) {
+        guard let scene = scene as? UIWindowScene else { return }
+        let window = UIWindow(windowScene: scene)
+        window.overrideUserInterfaceStyle = .dark
+        window.rootViewController = WebViewController()
+        window.makeKeyAndVisible()
+        self.window = window
+    }
+}
+
+/// The whole app: one full-screen WKWebView showing the bundled web UI (web/index.html, copied in from the repo's
+/// web/ folder). The page lays itself out under the notch and home bar with env(safe-area-inset-*), so the web view
+/// itself ignores the safe area. Links to http(s) sites open in Safari; everything else outside web/ is refused.
+final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDelegate {
+    private var webView: WKWebView!
+    /// web/ inside the app bundle; nil only if the build left it out
+    private let webRoot = Bundle.main.url(forResource: "web", withExtension: nil)
+    private let background = UIColor(named: "LaunchBG") ?? .black
+
+    override var preferredStatusBarStyle: UIStatusBarStyle { .lightContent }
+
+    override func loadView() {
+        let config = WKWebViewConfiguration()
+        config.allowsInlineMediaPlayback = true
+        config.mediaTypesRequiringUserActionForPlayback = []
+        config.defaultWebpagePreferences.preferredContentMode = .mobile
+
+        webView = WKWebView(frame: .zero, configuration: config)
+        webView.navigationDelegate = self
+        webView.uiDelegate = self
+        // no white flash before the page paints: the web view shows the launch screen colour until then
+        webView.isOpaque = false
+        webView.backgroundColor = background
+        webView.scrollView.backgroundColor = background
+        webView.scrollView.contentInsetAdjustmentBehavior = .never
+        webView.scrollView.bounces = false
+        webView.allowsBackForwardNavigationGestures = false
+        webView.allowsLinkPreview = false
+        if #available(iOS 16.4, *) { webView.isInspectable = true }
+        view = webView
+    }
+
+    override func viewDidLoad() {
+        super.viewDidLoad()
+        loadHome()
+    }
+
+    private func loadHome() {
+        guard let root = webRoot else { return showMissingUI() }
+        let index = root.appendingPathComponent("index.html")
+        guard FileManager.default.fileExists(atPath: index.path) else { return showMissingUI() }
+        webView.loadFileURL(index, allowingReadAccessTo: root)
+    }
+
+    private func showMissingUI() {
+        webView.loadHTMLString("""
+            <meta name="viewport" content="width=device-width,initial-scale=1">
+            <body style="background:#121212;color:#eee;font:17px -apple-system;padding:60px 24px">
+            GupWorks: the web UI (web/index.html) is missing from this build.</body>
+            """, baseURL: nil)
+    }
+
+    private func isInsideWebRoot(_ url: URL) -> Bool {
+        guard url.isFileURL, let root = webRoot?.standardizedFileURL.path else { return false }
+        let path = url.standardizedFileURL.path
+        return path == root || path.hasPrefix(root + "/")
+    }
+
+    // MARK: - WKNavigationDelegate
+
+    func webView(_ webView: WKWebView, decidePolicyFor navigationAction: WKNavigationAction,
+                 decisionHandler: @escaping (WKNavigationActionPolicy) -> Void) {
+        guard let url = navigationAction.request.url else { return decisionHandler(.cancel) }
+        if isInsideWebRoot(url) || url.scheme == "about" || url.scheme == "blob" || url.scheme == "data" {
+            return decisionHandler(.allow)
+        }
+        // only a link the user tapped leaves the app; the page can't push the phone to another site on its own
+        if (url.scheme == "https" || url.scheme == "http"), navigationAction.navigationType == .linkActivated {
+            UIApplication.shared.open(url)
+        }
+        decisionHandler(.cancel)
+    }
+
+    /// iOS can kill the page's process in the background (memory pressure); start it again instead of a blank screen
+    func webViewWebContentProcessDidTerminate(_ webView: WKWebView) {
+        loadHome()
+    }
+
+    // MARK: - WKUIDelegate
+
+    /// target=_blank links: same rule as above (Safari for http(s), nothing else)
+    func webView(_ webView: WKWebView, createWebViewWith configuration: WKWebViewConfiguration,
+                 for navigationAction: WKNavigationAction, windowFeatures: WKWindowFeatures) -> WKWebView? {
+        if let url = navigationAction.request.url, url.scheme == "https" || url.scheme == "http" {
+            UIApplication.shared.open(url)
+        }
+        return nil
+    }
+
+    /// WebKit requires the handler to be called every time; if a dialog is already up, answer straight away
+    private var canPresent: Bool { presentedViewController == nil && view.window != nil }
+
+    func webView(_ webView: WKWebView, runJavaScriptAlertPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping () -> Void) {
+        guard canPresent else { return completionHandler() }
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler() })
+        present(alert, animated: true)
+    }
+
+    func webView(_ webView: WKWebView, runJavaScriptConfirmPanelWithMessage message: String,
+                 initiatedByFrame frame: WKFrameInfo, completionHandler: @escaping (Bool) -> Void) {
+        guard canPresent else { return completionHandler(false) }
+        let alert = UIAlertController(title: nil, message: message, preferredStyle: .alert)
+        alert.addAction(UIAlertAction(title: "Cancel", style: .cancel) { _ in completionHandler(false) })
+        alert.addAction(UIAlertAction(title: "OK", style: .default) { _ in completionHandler(true) })
+        present(alert, animated: true)
+    }
+}

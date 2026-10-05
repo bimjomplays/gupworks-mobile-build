@@ -1,0 +1,50 @@
+# Builds the GupWorks iPhone app into an unsigned IPA on a GitHub-hosted Mac. Install it with iloader (Import IPA),
+# which signs it with your Apple ID.
+#  - every push that touches the app: IPA as a workflow artifact "GupWorks" (testing builds)
+#  - a tag like  ios-v0.1.0  : the IPA is also attached to a GitHub Release (kept versions)
+# Only ios/, web/ and this file trigger it. The job runs only in a public repo: macOS minutes are free there, so the
+# private development repo skips it and the public build copy (scripts/publish-public.sh) does the build.
+name: ios
+on:
+  push:
+    branches: ["**"]
+    tags: ["ios-v*"]
+    paths: ["ios/**", "web/**", ".github/workflows/ios.yml"]
+  workflow_dispatch:
+permissions:
+  contents: write
+jobs:
+  ipa:
+    if: github.event.repository.private == false
+    runs-on: macos-latest
+    defaults:
+      run:
+        working-directory: ios
+    steps:
+      - uses: actions/checkout@v4
+      - run: brew install xcodegen
+      - run: xcodegen generate
+      - name: Build
+        run: |
+          xcodebuild -project GupWorks.xcodeproj -target GupWorks -configuration Release -sdk iphoneos \
+            SYMROOT="$PWD/build" CURRENT_PROJECT_VERSION=${{ github.run_number }} \
+            CODE_SIGNING_ALLOWED=NO CODE_SIGNING_REQUIRED=NO CODE_SIGN_IDENTITY="" build > build.log 2>&1 \
+            || { grep -E "error:" build.log | head -60; tail -30 build.log; exit 1; }
+      - name: Package
+        run: |
+          test -f build/Release-iphoneos/GupWorks.app/web/index.html || { echo "web/index.html missing from the app"; exit 1; }
+          mkdir Payload
+          cp -R build/Release-iphoneos/GupWorks.app Payload/
+          zip -qry GupWorks.ipa Payload
+      - uses: actions/upload-artifact@v4
+        with:
+          name: GupWorks
+          path: ios/GupWorks.ipa
+      - name: Attach to a release (tags only)
+        if: startsWith(github.ref, 'refs/tags/')
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" GupWorks.ipa --title "$GITHUB_REF_NAME (build ${{ github.run_number }})" \
+            --notes "Unsigned IPA. Install with iloader (Import IPA)." \
+            || gh release upload "$GITHUB_REF_NAME" GupWorks.ipa --clobber
