@@ -33,12 +33,18 @@ private struct IssuedConfirm {
 /// decisions need a fresh Face ID (or passcode) check each time: `confirm` runs it and hands out a one-time confirm
 /// block, and a POST /v1/waiting/act without such a block never leaves the phone.
 ///
+/// Remote desktop (the Desktop tab, docs/remote-desktop-protocol.md): POST /v1/desktop/sessions leaves only with a
+/// desktop confirm block this bridge issued (Face ID; for a reconnect, the check that opened or resumed the desktop if
+/// it is under 2 minutes old),
+/// and the body is rebuilt here with the device. The bridge remembers the session it started and ends it on the PC
+/// itself when the app goes to the background (iOS stops the page's JavaScript there), inside a background task.
+///
 /// Voice input (VoiceInput): on-device speech-to-text only; the page gets the words, never audio, and sends what the
 /// owner chooses as an ordinary chat message. Locking or reloading drops a dictation.
 ///
 /// ops: hello · request {id, method, path, query, body, timeoutMs} · cancel {id} · pair.start · pair.stop ·
 ///      pair.torch {on} · pair.enter · pair.forget · settings · unlock {passcode} · lock.peek ·
-///      confirm {key, action, label, title, clockOffsetMs} · voice.start {tag} · voice.stop · voice.cancel
+///      confirm {key, action, label, title, clockOffsetMs, reuse, reuseOnly} · voice.start {tag} · voice.stop · voice.cancel
 /// events: pair {state: checking | paired | failed, ...} ·
 ///         lock {locked, state: idle | checking | cancelled | failed | no_passcode, biometry, passcode} ·
 ///         voice {tag, state: listening | stopped, text, reason} or {tag, level}
@@ -73,6 +79,14 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     private var lockState = "idle"
     private var issued: [IssuedConfirm] = []
     private static let confirmLife: TimeInterval = 90          // the PC takes confirmations up to 2 min old
+    /// the last check that opened a desktop session (a desktop confirm) or resumed one (the unlock after a lock closed
+    /// it); only a desktop reconnect may reuse it, never another owner decision's check
+    private var desktopCheck: (method: String, at: Date)?
+    /// this lock closed a running desktop session: the unlock that follows may resume it
+    private var resumeDesktop = false
+    private static let desktopReuse: TimeInterval = 100        // under the PC's 2 minutes, with room for the trip
+    /// the remote desktop session this phone started and hasn't ended yet (22 base64url characters)
+    private var desktopSession: String?
     private lazy var session: URLSession = {
         let c = URLSessionConfiguration.ephemeral          // no cookies, cache or credentials on disk
         c.requestCachePolicy = .reloadIgnoringLocalCacheData
@@ -120,9 +134,13 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             // the prompt names the action the block is for (not a label the page picked); Face ID shows no text,
             // the passcode and Touch ID sheets do
             let reason = "\(action) · \(title)"
+            // a desktop reconnect (only that) may take the last check instead of a new prompt; reuseOnly never prompts
+            let desktop = key == "desktop" && action == "start" && text.isEmpty
+            let reuse = desktop && ((body["reuse"] as? Bool) ?? false)
+            let reuseOnly = reuse && ((body["reuseOnly"] as? Bool) ?? false)
             Task {
                 replyHandler(await self.confirm(key: key, action: action, text: text, reason: reason,
-                                                offsetMs: offset), nil)
+                                                offsetMs: offset, reuse: reuse, reuseOnly: reuseOnly), nil)
             }
         case "request":
             guard let id = body["id"] as? Int else { return replyHandler(nil, "bad request") }
@@ -172,6 +190,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     /// the page was reloaded or its process died: nothing in flight belongs to anyone anymore
     func pageWillReload() {
+        endDesktopSession()
         cancelAll()
         stopScanning()
         voice.cancel()
@@ -212,6 +231,9 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         auth.cancel()
         autoPrompted = false
         issued.removeAll()
+        desktopCheck = nil
+        if desktopSession != nil { resumeDesktop = true }
+        endDesktopSession()
         codeAlert?.dismiss(animated: false)
         voice.cancel()
         if !locked {
@@ -243,8 +265,10 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         guard generation == lockGeneration, locked else { return ["unlocked": !locked] }
         let state: String
         switch out {
-        case .passed:
+        case .passed(let method):
             locked = false
+            if resumeDesktop { desktopCheck = (method, Date()) }
+            resumeDesktop = false
             setLockState("idle")
             return ["unlocked": true]
         case .cancelled, .busy: state = "cancelled"
@@ -270,27 +294,93 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
 
     /// Face ID (or the passcode) for exactly this decision, then a confirm block the request gate takes once.
     private func confirm(key: String, action: String, text: String, reason: String,
-                         offsetMs: Double) async -> [String: Any] {
+                         offsetMs: Double, reuse: Bool = false, reuseOnly: Bool = false) async -> [String: Any] {
+        // the protocol lets a reconnect reuse a check under 2 minutes old (with that check's time, not now)
+        if reuse, let last = desktopCheck, Date().timeIntervalSince(last.at) < Self.desktopReuse {
+            return issue(key: key, action: action, method: last.method, checkedAt: last.at, text: text, offsetMs: offsetMs)
+        }
+        if reuseOnly { return ["error": "expired"] }
         let generation = lockGeneration
         let out = await auth.run(reason: reason)
         guard generation == lockGeneration, !locked else { return ["error": "cancelled"] }
         switch out {
         case .passed(let method):
-            // the contract's own form (docs/phone-api.md): seconds, +00:00
-            let f = DateFormatter()
-            f.locale = Locale(identifier: "en_US_POSIX")
-            f.timeZone = TimeZone(identifier: "UTC")
-            f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxxxx"
-            let at = f.string(from: Date().addingTimeInterval(offsetMs / 1000))
-            issued.removeAll { $0.expires < Date() }
-            issued.append(IssuedConfirm(key: key, action: action, method: method, at: at, text: text,
-                                        expires: Date().addingTimeInterval(Self.confirmLife)))
-            return ["confirm": ["key": key, "action": action, "method": method, "at": at]]
+            if key == "desktop" && action == "start" { desktopCheck = (method, Date()) }
+            return issue(key: key, action: action, method: method, checkedAt: Date(), text: text, offsetMs: offsetMs)
         case .cancelled: return ["error": "cancelled"]
         case .failed: return ["error": "failed"]
         case .noPasscode: return ["error": "no_passcode"]
         case .busy: return ["error": "busy"]
         }
+    }
+
+    /// A confirm block for a check that passed at checkedAt, remembered so the request gate takes it once.
+    private func issue(key: String, action: String, method: String, checkedAt: Date, text: String,
+                       offsetMs: Double) -> [String: Any] {
+        // the contract's own form (docs/phone-api.md): seconds, +00:00
+        let f = DateFormatter()
+        f.locale = Locale(identifier: "en_US_POSIX")
+        f.timeZone = TimeZone(identifier: "UTC")
+        f.dateFormat = "yyyy-MM-dd'T'HH:mm:ssxxxxx"
+        let at = f.string(from: checkedAt.addingTimeInterval(offsetMs / 1000))
+        issued.removeAll { $0.expires < Date() }
+        issued.append(IssuedConfirm(key: key, action: action, method: method, at: at, text: text,
+                                    expires: Date().addingTimeInterval(Self.confirmLife)))
+        return ["confirm": ["key": key, "action": action, "method": method, "at": at]]
+    }
+
+    /// POST /v1/desktop/sessions: only with a desktop/start block this bridge issued (used up). The body sent is
+    /// built here: the versions and monitor the page asked for, this device, and exactly the block that was checked.
+    private func takeDesktopStart(_ body: Data?) -> Data? {
+        guard let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let c = json["confirm"] as? [String: Any], c.count == 4,
+              c["key"] as? String == "desktop", c["action"] as? String == "start",
+              let method = c["method"] as? String, let at = c["at"] as? String else { return nil }
+        issued.removeAll { $0.expires < Date() }
+        guard let i = issued.firstIndex(where: {
+            $0.key == "desktop" && $0.action == "start" && $0.method == method && $0.at == at && $0.text.isEmpty
+        }) else { return nil }
+        issued.remove(at: i)
+        let versions = ((json["versions"] as? [Any]) ?? []).compactMap { $0 as? Int }.filter { $0 > 0 && $0 < 100 }
+        var out: [String: Any] = ["versions": versions.isEmpty ? [1] : Array(versions.prefix(8)),
+                                  "device": ["model": Self.deviceModel(), "app": Self.appVersion()],
+                                  "confirm": ["key": "desktop", "action": "start", "method": method, "at": at]]
+        if let monitor = json["monitor"] as? String, !monitor.isEmpty, monitor.count <= 64 { out["monitor"] = monitor }
+        return try? JSONSerialization.data(withJSONObject: out)
+    }
+
+    /// "iPhone17,1": the hardware model (the PC's badge names the phone with it)
+    private static func deviceModel() -> String {
+        var info = utsname()
+        uname(&info)
+        let model = withUnsafeBytes(of: &info.machine) { raw in
+            String(decoding: raw.prefix { $0 != 0 }, as: UTF8.self)
+        }
+        return String(model.prefix(32))
+    }
+
+    private static func appVersion() -> String {
+        String(((Bundle.main.infoDictionary?["CFBundleShortVersionString"] as? String) ?? "1.0").prefix(16))
+    }
+
+    /// The app is leaving the front (or the page reloads): end the desktop session on the PC from here, because the
+    /// page's JavaScript won't run again in time. A background task keeps the request alive for the moment it needs.
+    func endDesktopSession() {
+        guard let id = desktopSession, let p = pairing else { return }
+        desktopSession = nil
+        let bg = BackgroundTask()
+        bg.id = UIApplication.shared.beginBackgroundTask(withName: "desktop-end") {
+            Task { @MainActor in bg.end() }
+        }
+        Task {
+            _ = await self.send(base: p.baseURL, token: p.pendingToken ?? p.token, method: "POST",
+                                path: "/v1/desktop/sessions/\(id)/end", query: [:], body: Data("{}".utf8), timeout: 8)
+            bg.end()
+        }
+    }
+
+    private static func isSessionId(_ s: String) -> Bool {
+        s.count == 22 && s.unicodeScalars.allSatisfy(CharacterSet.ascii(plus: "_-").contains)
     }
 
     /// POST /v1/waiting/act: only a body whose key, action, text and confirm block match a confirmation this bridge
@@ -332,6 +422,15 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
             body = checked
         }
+        let startingDesktop = path == "/v1/desktop/sessions"
+        if startingDesktop {
+            // never sent: a remote desktop session without this phone's own Face ID check for it
+            guard method == "POST", let checked = takeDesktopStart(body) else {
+                return ["status": 428,
+                        "body": #"{"error":{"code":"confirmation_required","message":"Confirm with Face ID first."}}"#]
+            }
+            body = checked
+        }
         let timeout = max(1, min(120, ((a["timeoutMs"] as? Double) ?? 15000) / 1000))
 
         let rotating = method == "POST" && path == "/v1/auth/rotate"
@@ -356,6 +455,20 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
         }
         if rotating, out.status == 200 { return keepRotatedToken(out.body, for: p) }
+        if startingDesktop, out.status == 201, let data = out.body,
+           let json = try? JSONSerialization.jsonObject(with: data) as? [String: Any],
+           let id = json["id"] as? String, Self.isSessionId(id) {
+            desktopSession = id                       // a newer session replaced any older one on the PC
+            if Task.isCancelled || locked {
+                // the app left the front while the PC was starting it: nobody will watch it
+                endDesktopSession()
+                return ["error": "aborted"]
+            }
+        }
+        // the page ended it on the PC (only a real answer counts: after a failed call the shell still ends it later)
+        if method == "POST", let id = desktopSession, path == "/v1/desktop/sessions/\(id)/end", out.status == 200 {
+            desktopSession = nil
+        }
         return out.reply
     }
 
@@ -555,6 +668,17 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         let f = ISO8601DateFormatter()
         f.formatOptions = [.withInternetDateTime]
         return f.string(from: d)
+    }
+}
+
+/// One background task's id, shared by its expiry handler and the request that ends it (ended once, on main).
+@MainActor
+private final class BackgroundTask {
+    var id = UIBackgroundTaskIdentifier.invalid
+    func end() {
+        guard id != .invalid else { return }
+        UIApplication.shared.endBackgroundTask(id)
+        id = .invalid
     }
 }
 

@@ -183,6 +183,17 @@
     /** New device token. Through the iOS shell the answer is {rotated, created_at}: the shell keeps the token in the
         Keychain and switches to it once the PC has seen it (docs/phone-api.md "Rotation from the app"). */
     rotate(opts) { return request('POST', '/v1/auth/rotate', Object.assign({ body: {} }, opts)); },
+
+    // ---- remote desktop (docs/remote-desktop-protocol.md "Signaling"; the PC's bridge forwards these to its host)
+    /** {available, versions, session, reason}; always 200 (a host that isn't running reads as available: false) */
+    desktopStatus(opts) { return request('GET', '/v1/desktop/status', opts); },
+    /** body {versions, monitor, confirm}: confirm from GupHooks.confirmDesktop() only. 201 {id, version, offer,
+        expires_at, ice_servers?}. In the app the shell sends it only with a block it issued, and adds the device. */
+    desktopStart(body, opts) { return request('POST', '/v1/desktop/sessions', Object.assign({ body, timeoutMs: 20000 }, opts)); },
+    desktopAnswer(id, answer, opts) {
+      return request('POST', `/v1/desktop/sessions/${encodeURIComponent(id)}/answer`, Object.assign({ body: { answer } }, opts));
+    },
+    desktopEnd(id, opts) { return request('POST', `/v1/desktop/sessions/${encodeURIComponent(id)}/end`, Object.assign({ body: {} }, opts)); },
   };
 
   root.GupAPI = GupAPI;

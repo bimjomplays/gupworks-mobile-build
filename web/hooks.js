@@ -10,6 +10,12 @@
      answer text too (the shell sends it only with that text), and title names the decision in the passcode prompt. Against the dev mock a glass sheet stands in for Face ID; in a desktop browser against a real PC
      owner decisions are refused (nothing can confirm them), so they are made on the PC.
 
+   GupHooks.confirmDesktop({title, reuse, reuseOnly}) -> Promise<confirm block | null>
+     The only source of the confirm block that starts a remote desktop session (key desktop, action start). In the
+     app the shell runs Face ID and sends POST /v1/desktop/sessions only with a block it issued, once. reuse: a
+     reconnect may take the last check if it is under 2 minutes old (the protocol allows it), so a dropped link or the
+     return from the app lock doesn't ask twice; reuseOnly never prompts (null when the last check is too old).
+
    GupHooks.startVoice({onText}) -> Promise<{text, send} | null>
      The chat's mic: on-device speech-to-text in the voice sheet (voice.js). The words go into the chat box as they
      come (onText); it resolves the final text with send true (the owner tapped the send arrow) or false (keep it in
@@ -69,6 +75,37 @@
     },
     startVoice(opts) {
       return root.GupVoice.open(opts);
+    },
+    /** The confirm block for starting a remote desktop session (key desktop, action start), from here only.
+        In the app the shell runs Face ID; reuse: a reconnect may take the last check if it is under 2 minutes old
+        (the contract allows that), and with reuseOnly it never prompts: {error: 'expired'} -> null. */
+    async confirmDesktop(req) {
+      req = req || {};
+      const base = { key: 'desktop', action: 'start', label: 'view the PC\'s screen', title: req.title || 'PC screen' };
+      if (root.GupAPI.mode === 'mock') {
+        if (req.reuse) return { key: 'desktop', action: 'start', method: 'face_id', at: root.GupAPI.serverNow().toISOString() };
+        return devConfirm(base);
+      }
+      if (!root.GupNative.available) {
+        toast('The desktop opens with Face ID in the GupWorks iPhone app.', 'bad');
+        return null;
+      }
+      let r = null;
+      try {
+        r = await root.GupNative.call('confirm', {
+          key: 'desktop', action: 'start', text: '', title: base.title, reuse: !!req.reuse, reuseOnly: !!req.reuseOnly,
+          clockOffsetMs: root.GupAPI.serverNow().getTime() - Date.now(),
+        });
+      } catch (e) { /* locked meanwhile */ }
+      const c = r && r.confirm;
+      if (c && c.key === 'desktop' && c.action === 'start') return c;
+      const why = {
+        failed: 'Face ID didn\'t pass, so the desktop stays closed.',
+        no_passcode: 'Set a passcode on this iPhone first: the desktop needs Face ID or the passcode.',
+        busy: 'Another check is still open.',
+      }[r && r.error];
+      if (why && !req.reuseOnly) toast(esc(why), 'bad');
+      return null;
     },
   };
   root.GupHooks = GupHooks;

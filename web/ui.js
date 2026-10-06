@@ -26,6 +26,12 @@
     qr: '<path d="M4 9V4h5M15 4h5v5M20 15v5h-5M9 20H4v-5"/>',
     flash: '<path d="M13 3 5.5 13.5H12L11 21l7.5-10.5H12z"/>',
     file: '<path d="M6.5 3.5h7l4 4v13h-11zM13.5 3.5v4h4"/>',
+    back: '<path d="M15 5.5 8.5 12l6.5 6.5"/>',
+    monitor: '<rect x="3" y="4.5" width="18" height="12" rx="2.5"/><path d="M9 20h6M12 16.5V20"/>',
+    monitoroff: '<rect x="3" y="4.5" width="18" height="12" rx="2.5"/><path d="M9 20h6M12 16.5V20M6 8l12 5"/>',
+    keyboard: '<rect x="2.5" y="6.5" width="19" height="11" rx="2.5"/><path d="M6.5 10.5h.01M10 10.5h.01M14 10.5h.01M17.5 10.5h.01M7.5 14h9"/>',
+    search: '<circle cx="11" cy="11" r="6.5"/><path d="m16 16 4.5 4.5"/>',
+    expand: '<path d="M8 4H5a1 1 0 0 0-1 1v3M16 4h3a1 1 0 0 1 1 1v3M8 20H5a1 1 0 0 1-1-1v-3M16 20h3a1 1 0 0 0 1-1v-3"/>',
   };
   function ic(name, size, sw, cls) {
     size = size || 20;

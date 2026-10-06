@@ -8,7 +8,8 @@
    What it implements: bearer auth (401 after a short delay), JSON body rules (411/413/415/400), Gup's thread with
    newest/older pages and the cursor long-poll (upserts: queued -> picked up, partial -> final, tool rows -> done),
    send with client_id dedupe, the waiting list with its version long-poll, /v1/waiting/act with the confirm block
-   (428 / 409 stale / 403 pc_only), /v1/status and /v1/auth/rotate. Gup "answers" with canned replies. */
+   (428 / 409 stale / 403 pc_only), /v1/status and /v1/auth/rotate, and /v1/desktop/... answered by a fake remote
+   desktop host when one is passed in (createMock({desktop}), web/mock-desktop.js; the HTTP mock has none). Gup "answers" with canned replies. */
 (function (root) {
   'use strict';
 
@@ -38,6 +39,7 @@
     const tokens = { current: opts.token || DEV_TOKEN, pending: null };
     const settings = { paused: false, newWork: { ok: true, why: 'ok' } };
     const t0 = Date.now();
+    const desk = opts.desktop || null;            // a GupMockDesk (browser only: it needs WebRTC)
 
     // ---------------------------------------------------------------- thread
     function wake() { for (const w of Array.from(waiters)) w.check(); }
@@ -292,7 +294,16 @@
       '/v1/waiting': { GET: (q, b, s) => getWaiting(q, s) },
       '/v1/waiting/act': { POST: (q, b) => act(b) },
       '/v1/auth/rotate': { POST: () => rotate() },
+      // remote desktop: answered by a fake host (mock-desktop.js) when there is one; the HTTP mock has none
+      '/v1/desktop/status': { GET: () => desk ? desk.status() : ok({ available: false, versions: [1], session: null, reason: 'This mock has no desktop host (use index.html?mock in a browser).' }) },
+      '/v1/desktop/sessions': { POST: (q, b) => desk ? desk.start(b) : err(503, 'host_unavailable', 'This mock has no desktop host.') },
     };
+    const DESK_SESSION = /^\/v1\/desktop\/sessions\/([A-Za-z0-9_-]{22})\/(answer|end)$/;
+    function deskRoute(path) {
+      const m = DESK_SESSION.exec(path);
+      if (!m) return null;
+      return { POST: (q, b) => !desk ? err(409, 'stale', 'No such session.') : m[2] === 'answer' ? desk.answer(m[1], b) : desk.end(m[1]) };
+    }
 
     /** One request: {method, path, query (strings), auth (Authorization header), contentType, contentLength (number or
         null), bodyText, signal}. Resolves {status, json}. */
@@ -301,7 +312,7 @@
         await sleep(authDelayMs);
         return err(401, 'unauthorized', 'Not paired: pair this phone again.');
       }
-      const route = ROUTES[req.path];
+      const route = ROUTES[req.path] || deskRoute(req.path);
       if (!route) return err(404, 'not_found', 'no such endpoint');
       const fn = route[req.method];
       if (!fn) return err(405, 'method_not_allowed', `use ${Object.keys(route).join(' or ')}`);

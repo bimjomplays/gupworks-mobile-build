@@ -21,6 +21,7 @@
   const LOOK = { face_id: 'look at your iPhone to unlock', touch_id: 'touch the sensor to unlock', none: 'enter your passcode to unlock' };
 
   let locked = false, info = {}, peekAsked = false, drawn = false;
+  let deskHost = null;              // a desktop session was closed by this lock (mockup 12): Face ID resumes it
 
   function draw() {
     if (drawn) return;
@@ -42,14 +43,14 @@
     const bio = NAME[info.biometry] ? info.biometry : 'face_id';
     const state = info.state || 'idle';
     $('lock').dataset.state = state;
-    $('lock-sub').innerHTML = `${ic('lock', 17)}locked · ${NAME[bio]}`;
+    $('lock-sub').innerHTML = `${ic('lock', 17)}locked · ${deskHost ? 'desktop closed' : NAME[bio]}`;
     $('lock-fid').innerHTML = bio === 'face_id' ? FACEID : ic('lock', 64, 1.6);
     $('lock-fid').setAttribute('aria-label', bio === 'none' ? 'Unlock with the passcode' : `Unlock with ${NAME[bio]}`);
     const hint = {
       cancelled: `tap to unlock`,
       failed: `didn't match · tap to try again`,
       no_passcode: `set a passcode on this iPhone first`,
-    }[state] || LOOK[bio];
+    }[state] || (deskHost ? LOOK[bio].replace(/unlock$/, 'resume') : LOOK[bio]);
     $('lock-hint').textContent = hint;
     $('lock-hint').className = 'hint' + (state === 'failed' || state === 'no_passcode' ? ' bad' : '');
     $('lock-pin').textContent = state === 'no_passcode' ? 'open settings' : 'use passcode';
@@ -57,6 +58,10 @@
 
   function pill(n) {
     const el = $('lock-pill');
+    if (locked && deskHost) {
+      el.innerHTML = `<span class="amber">●</span>stream closed · ${esc(deskHost)}`;
+      return el.classList.remove('hidden');
+    }
     if (!locked || typeof n !== 'number' || n < 0) return el.classList.add('hidden');
     el.innerHTML = n ? `<span class="amber">●</span>${esc(String(n))} waiting on you` : `<span class="dim">●</span>nothing waiting`;
     el.classList.remove('hidden');
@@ -83,6 +88,13 @@
       }
       render();
       if (i && i.native && !document.hidden) peek();     // the shell has answered, so it can ask the PC now
+    },
+    /** the Desktop tab closed its session for this lock (host) or has nothing to resume (null) */
+    desktopClosed(host) {
+      deskHost = host || null;
+      if (!locked) return;
+      render();
+      pill(null);
     },
     hide() {
       if (!locked) return;

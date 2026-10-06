@@ -50,17 +50,41 @@
       <div class="det">Projects, tickets and floor health come to the phone in a later version. For now they're on the PC.</div></div></div>
   </section>
 
+  <!-- Desktop: the PC's screen (monitor picker, connecting, disconnected; the viewer is #desk below) -->
+  <section class="view scroller" id="v-desktop" aria-label="Desktop">
+    <div class="dt" id="d-body"></div>
+  </section>
+
   <!-- Status and usage -->
   <section class="view scroller" id="v-status" aria-label="Status">
     <div class="stat" id="s-body"></div>
   </section>
 
-  <nav class="tabbar" id="tabbar" aria-label="Tabs">
+  <nav class="tabbar five" id="tabbar" aria-label="Tabs">
     <button class="tab" data-tab="gup" type="button"><span class="tbbot" id="tab-gup-icon"></span><span>Gup</span></button>
     <button class="tab" data-tab="waiting" type="button"><span id="tab-waiting-icon"></span><em class="tbadge hidden" id="badge"></em><span>Waiting</span></button>
     <button class="tab" data-tab="projects" type="button"><span id="tab-projects-icon"></span><span>Projects</span></button>
+    <button class="tab" data-tab="desktop" type="button"><span id="tab-desktop-icon"></span><span>Desktop</span></button>
     <button class="tab" data-tab="status" type="button"><span id="tab-status-icon"></span><span>Status</span></button>
   </nav>
+
+  <!-- Desktop viewer: the whole monitor, full screen (desktop.js). Pinch zoom, drag pan, tap clicks, hold then move drags. -->
+  <section class="desk hidden" id="desk" aria-label="PC screen">
+    <div class="dstream" id="d-stream"><video id="d-video" playsinline muted autoplay disablepictureinpicture></video><div class="dfx" id="d-fx"></div></div>
+    <div class="vtop g" id="d-top">
+      <button class="bk" id="d-back" type="button" aria-label="Disconnect"></button>
+      <button class="mi" id="d-mon" type="button" aria-label="Monitors"></button>
+      <div class="grow" id="d-titlebox"><div class="ti" id="d-title"></div><div class="su" id="d-sub"></div></div>
+      <span class="chip c-g dot" id="d-chip">live</span>
+      <button class="kb" id="d-kbd-btn" type="button" aria-label="Keyboard"></button>
+    </div>
+    <div class="dnote g hidden" id="d-note" role="status"></div>
+    <div class="zhint g" id="d-hint"></div>
+    <div class="mini g hidden" id="d-mini"><div class="m" id="d-mini-m"><canvas id="d-mini-c"></canvas><span class="vp" id="d-mini-vp"></span></div><span class="z" id="d-mini-z"></span></div>
+    <!-- what the phone keyboard types goes through this field to the PC (autocorrect and dictation on) -->
+    <textarea id="d-kbd" class="dkbd" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
+              enterkeyhint="enter" aria-label="Type on the PC"></textarea>
+  </section>
 </div>
 
 <!-- Pairing with the PC (shown over everything; inside the app the camera runs under the page) -->
@@ -104,6 +128,9 @@
 <script src="hooks.js"></script>
 <script src="pair.js"></script>
 <script src="lock.js"></script>
+<script src="desk-core.js"></script>
+<script src="desk-link.js"></script>
+<script src="desktop.js"></script>
 <script src="app.js"></script>
 </body>
 </html>

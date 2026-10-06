@@ -33,6 +33,7 @@
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + tab));
     document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
     if (tab === 'status') refreshStatus();
+    if (tab === 'desktop') root.GupDesk.show(); else root.GupDesk.hide();
     if (tab === 'gup') stickBottom(false);
   }
 
@@ -514,6 +515,7 @@
   }
 
   function onPaired(e) {
+    root.GupDesk.reset();
     S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null;
     usePaired(e);
     start();
@@ -548,6 +550,7 @@
     stop();
     try { await N.call('pair.forget'); } catch (e) { return toast('Couldn\'t unpair: ' + esc(e.message || 'the app refused'), 'bad'); }
     API.reset();
+    root.GupDesk.reset();
     S.phone = null;
     S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null; S.busy = false;
     S.conn = 'connecting';
@@ -572,7 +575,7 @@
   function start() {
     stop();
     if (Lock.isLocked) return;                          // the shell refuses PC calls while locked anyway
-    if (!API.configured) { setConn('unpaired'); renderChat(); renderWaiting(); renderStatus(); return; }
+    if (!API.configured) { setConn('unpaired'); renderChat(); renderWaiting(); renderStatus(); if (S.tab === 'desktop') root.GupDesk.show(); return; }
     S.conn = 'connecting';
     renderConn();
     const ctl = new AbortController();
@@ -580,11 +583,13 @@
     chatLoop(ctl.signal);
     waitingLoop(ctl.signal);
     statusLoop(ctl.signal);
+    if (S.tab === 'desktop') root.GupDesk.show();
   }
 
   API.on('unauthorized', () => {
     stop();
     S.conn = 'unauthorized';
+    root.GupDesk.unauthorized();
     renderConn(); renderChat(); renderWaiting(); renderStatus();
   });
   API.on('reachable', ok => { if (!ok && S.conn !== 'unauthorized') setConn('offline'); });
@@ -601,11 +606,11 @@
   // the shell locked (the app went to the background) or Face ID / the passcode passed
   N.on('lock', e => {
     if (e.locked) {
-      if (!Lock.isLocked) { stop(); if (Pair.isOpen) Pair.close(); }
+      if (!Lock.isLocked) { stop(); if (Pair.isOpen) Pair.close(); root.GupDesk.lock(); }
       Lock.show(e);
     } else if (Lock.isLocked) {
       Lock.hide();                                      // at once: the shell says "unlocked" twice (unlock + sync)
-      askShell(true);
+      askShell(true).then(() => root.GupDesk.unlocked());
     }
   });
 
@@ -631,6 +636,7 @@
     $('tab-waiting-icon').outerHTML = ic('inbox', 25, 1.9);
     $('tab-projects-icon').outerHTML = ic('folder', 25, 1.9);
     $('tab-status-icon').outerHTML = ic('pulse', 25, 1.9);
+    root.GupDesk.wire();
     syncComposer();
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
@@ -723,7 +729,7 @@
   async function boot() {
     if (params.has('frame')) devFrame();
     wire();
-    showTab(['gup', 'waiting', 'projects', 'status'].includes(params.get('tab')) ? params.get('tab') : 'gup');
+    showTab(['gup', 'waiting', 'projects', 'desktop', 'status'].includes(params.get('tab')) ? params.get('tab') : 'gup');
     const mock = params.get('mock');
     if (mock === 'server') {
       // dev only, and only against a mock on this machine: mock mode fakes the owner confirmation
@@ -732,7 +738,11 @@
       API.configure({ baseUrl: base, token: 'mock', mode: 'mock' });
     } else if (mock !== null) {
       await loadScript('mock.js');                        // dev only: never loaded without ?mock
-      const m = root.GupMock.createMock({ speed: Number(params.get('speed')) || 1 });
+      await loadScript('mock-desktop.js');                // the fake remote desktop host (WebRTC in this page)
+      if (params.get('rtc') === 'loop') root.GupMockDesk.installLoopbackRTC();   // no network for ICE (sandboxes)
+      const desk = root.GupMockDesk.create({ state: params.get('desk') || 'ok' });
+      root.GupDevDesk = desk;
+      const m = root.GupMock.createMock({ speed: Number(params.get('speed')) || 1, desktop: desk });
       API.useTransport(root.GupMock.inPageTransport(m), 'mock');
       root.GupDevMock = m;
     } else if (N.available) {
