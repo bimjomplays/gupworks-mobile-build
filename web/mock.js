@@ -173,20 +173,36 @@
       addMsg({ body: 'Filed **#812** for Casper. He planned it and a builder is on it now.' }, now - 20 * min);
       addMsg({ sender: 'casper', role: 'agent', body: 'Builder picked up #812; first test run is green.' }, now - 9 * min);
 
+      // cards as the PC makes them (docs/phone-api.md "The card"); approval:14 and proposed:161 stay without one, like an
+      // item from an older PC, so the plain card is exercised too
+      const reply = (label, action, text, style, recommended, pc_only) => ({ label, action, text, recommended: !!recommended, style, pc_only: !!pc_only });
+      const card = (title, lines, replies) => ({ title, lines, replies, source: 'model', made_at: iso(now - 30 * min) });
       waiting = [
         { key: 'approval:12', kind: 'approval', ref: 12, ticket: 806, project: 'ghost', title: 'Publish Ghost 1.15.2',
-          detail: 'Gate green: 41 passed, 0 failed. Reviewed by Opus 5.5.', by: 'casper', at: iso(now - 120 * min), actions: yesNo, pc_only: false },
+          detail: 'Gate green: 41 passed, 0 failed. Reviewed by Opus 5.5.', by: 'casper', at: iso(now - 120 * min), actions: yesNo, pc_only: false,
+          card: card('Publish Ghost 1.15.2', ['The new version passed every check and a reviewer signed it off.', 'Say yes and the team ships it.'], [
+            reply('Yes, ship it', 'approve', 'Ship it.', 'yes', true), reply('Not yet', 'reject', 'Hold off for now.', 'no'),
+            reply('Ask Gup about it', 'chat', 'About #806 (Publish Ghost 1.15.2): what changed in this version?', 'neutral')]) },
         { key: 'approval:14', kind: 'approval', ref: 14, ticket: 152, project: 'website', title: 'Publish services page',
           detail: 'Reviewer passed it: 12 checks green.', by: 'sky', at: iso(now - 28 * min), actions: yesNo, pc_only: false },
         { key: 'escalated:131:9031', kind: 'escalated', ref: 131, ticket: 131, project: 'mobile', title: 'Sideload with the free Apple ID or pay $99/yr?',
-          detail: 'Free: re-signed every 7 days. Paid: TestFlight and push.', by: 'gizmo', at: iso(now - 64 * min), actions: escActs, pc_only: false },
+          detail: 'Free: re-signed every 7 days. Paid: TestFlight and push.', by: 'gizmo', at: iso(now - 64 * min), actions: escActs, pc_only: false,
+          card: card('Free Apple ID or $99 a year?', ['Free means the app must be re-signed every 7 days.', 'Paid adds TestFlight and push.'], [
+            reply('Stay on free for now', 'answer', 'Free for now.', 'yes', true), reply('Ask me later', 'park', 'Ask me again next week.', 'neutral'),
+            reply('Tell me more', 'chat', 'About #131: what would the paid account change for me?', 'neutral')]) },
         proposedItem(161, 'gup', 'from an email', 'Weekly SEO report for the website', '', now - 40 * min),
-        proposedItem(160, 'sky', 'from a web form', 'Fix the broken link a visitor reported', '', now - 4 * min),
+        Object.assign(proposedItem(160, 'sky', 'from a web form', 'Fix the broken link a visitor reported', '', now - 4 * min), {
+          card: card('Fix a broken link', ['A visitor reported a dead link on the website.'], [
+            reply('Yes, fix it', 'promote', '', 'yes', true), reply('Later', 'park', '', 'neutral'), reply('No', 'drop', '', 'no')]) }),
         { key: 'stuck:157', kind: 'stuck', ref: 157, ticket: 157, project: 'website', title: 'Contact page build is past its time limit',
           detail: 'Building for 3 h (limit 2 h). Gup was told 40 min ago.', by: 'gup', at: iso(now - 40 * min),
-          actions: [{ id: 'ok', label: 'It\'s fine', text: 'required', style: 'neutral' }], pc_only: false },
+          actions: [{ id: 'ok', label: 'It\'s fine', text: 'required', style: 'neutral' }], pc_only: false,
+          card: card('Contact page build is slow', ['It has run 3 hours; the limit is 2.'], [
+            reply('It\'s fine, keep going', 'ok', 'It is fine, leave it running.', 'neutral', true), reply('Ask Gup what happened', 'chat', 'About #157 (Contact page build is slow): why is it taking so long?', 'neutral')]) },
         { key: 'memory:5', kind: 'memory', ref: 5, ticket: null, project: null, title: 'New rule: run the gate before every publish',
-          detail: 'The Librarian proposes a rule. Rules change only on the PC.', by: 'librarian', at: iso(now - 15 * min), actions: [], pc_only: true },
+          detail: 'The Librarian proposes a rule. Rules change only on the PC.', by: 'librarian', at: iso(now - 15 * min), actions: [], pc_only: true,
+          card: card('New rule: run the gate first', ['The Librarian suggests running the tests before every publish.', 'Rules are decided on the PC.'], [
+            reply('Accept the rule', 'accept', '', 'yes', true, true), reply('Ask Gup about it', 'chat', 'About the proposed rule "run the gate before every publish": why?', 'neutral')]) },
       ];
     })();
 

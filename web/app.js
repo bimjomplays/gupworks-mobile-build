@@ -22,7 +22,7 @@
     // chat
     msgs: new Map(), cursor: null, busy: false, moreBefore: false, loadingOlder: false, pending: [], openTools: new Set(),
     // waiting
-    items: null, version: null, filter: 'all', acting: new Set(),
+    items: null, version: null, filter: 'all', acting: new Set(), open: new Set(),
     runCtl: null,
     phone: null,                 // {host, fqdn, pairedAt} of the paired PC (from the shell; never the token)
   };
@@ -274,7 +274,105 @@
     return `<button class="btn ${cls}" ${data} type="button">${ic(icon, 20, 2.4)}${esc(a.label)}</button>`;
   }
 
+  // ---- the compact card (docs/phone-api.md "The card"): plain title, 1-2 short lines, 2-4 suggested replies,
+  // everything else (the full title, detail, who, every action) one tap away under "details". An item without a
+  // usable `card` (an older PC) keeps today's card, plainCardFor.
+  const CARD_REPLIES = 4, CARD_LINES = 2;
+  function cardOf(item) {
+    const c = item && item.card;
+    if (!c || typeof c !== 'object' || typeof c.title !== 'string' || !c.title.trim()) return null;
+    const lines = (Array.isArray(c.lines) ? c.lines : []).filter(l => typeof l === 'string' && l.trim()).slice(0, CARD_LINES);
+    const acts = item.pc_only ? [] : (item.actions || []);
+    const replies = [];
+    let skipped = 0;
+    (Array.isArray(c.replies) ? c.replies : []).slice(0, CARD_REPLIES).forEach((r, i) => {
+      if (!r || typeof r.label !== 'string' || !r.label.trim() || typeof r.action !== 'string') return;
+      const chat = r.action === 'chat';
+      const act = chat ? null : acts.find(a => a.id === r.action);
+      if (r.pc_only === true || (!chat && !act) || (chat && !(typeof r.text === 'string' && r.text.trim()))) { skipped++; return; }
+      replies.push({ i, label: r.label.trim(), action: r.action, text: typeof r.text === 'string' ? r.text : '',
+                     style: ['yes', 'no', 'neutral'].includes(r.style) ? r.style : 'neutral', recommended: r.recommended === true });
+    });
+    if (!lines.length && !replies.length) return null;
+    return { title: c.title.trim(), lines, replies, skipped };
+  }
+
+  function replyBtn(item, r) {
+    const cls = r.style === 'yes' ? 'ok' : r.style === 'no' ? 'no' : 'q';
+    const icon = r.action === 'chat' ? 'chat' : r.style === 'yes' ? 'check' : r.style === 'no' ? 'x' : 'clock';
+    return `<button class="btn ${cls} rp${r.recommended ? ' rec' : ''}" data-key="${esc(item.key)}" data-reply="${r.i}" type="button">` +
+           `${ic(icon, 18, 2.4)}<span>${esc(r.label)}</span></button>`;
+  }
+
+  function detailsFor(item) {
+    const src = [item.project && cap(item.project), item.by && cap(item.by)].filter(Boolean);
+    const acts = item.pc_only ? [] : (item.actions || []);
+    const canWrite = acts.some(a => a.text === 'optional') && !acts.some(a => a.text === 'required');
+    return `<div class="dt">` +
+           `<div class="dtt">${esc((item.ticket ? `#${item.ticket} ` : '') + (item.title || ''))}</div>` +
+           (item.detail ? `<div class="det">${fmtText(item.detail)}</div>` : '') +
+           `<div class="dby">${item.by ? bot(item.by, 22, { radius: 7 }) : ''}<span>${esc(src.join(' · '))}</span></div>` +
+           (item.pc_only ? `<div class="pconly"><b>›</b> decide this one on the PC</div>`
+             : acts.length ? `<div class="acts">${acts.map(a => btnFor(item, a, false)).join('')}` +
+               (canWrite ? `<button class="btn q more" data-key="${esc(item.key)}" data-write="1" type="button" aria-label="Add a note">${ic('chat', 20, 2.2)}</button>` : '') + `</div>` : '') +
+           `</div>`;
+  }
+
   function cardFor(item) {
+    const card = cardOf(item);
+    if (!card) return plainCardFor(item);
+    const [label, chipCls] = kindOf(item.kind);
+    const src = [item.project && cap(item.project), item.by && cap(item.by)].filter(Boolean).join(' · ');
+    const open = S.open.has(item.key);
+    const busy = S.acting.has(item.key) ? ' busy' : '';
+    const ordered = card.replies.filter(r => r.recommended).concat(card.replies.filter(r => !r.recommended));
+    const k = esc(item.key);
+    return `<div class="card g cc${item.kind === 'approval' ? ' wa' : ''}${open ? ' open' : ''}${busy}" data-item="${k}">` +
+      `<div class="ck"><span class="chip ${chipCls}">${esc(label)}</span><span class="src">${esc(src)}</span><span class="when">${esc(ago(item.at))}</span></div>` +
+      `<div class="ttl">${esc(card.title)}</div>` +
+      card.lines.map(l => `<div class="cl">${esc(l)}</div>`).join('') +
+      (ordered.length ? `<div class="rps">${ordered.map(r => replyBtn(item, r)).join('')}</div>` : '') +
+      (card.skipped || (item.pc_only && !ordered.length) ? `<div class="pconly"><b>›</b> the rest is decided on the PC</div>` : '') +
+      `<div class="cf"><button class="lnk" data-key="${k}" data-chatdraft="1" type="button">${ic('chat', 16, 2.2)}reply in chat</button>` +
+      `<button class="lnk more" data-more="${k}" aria-expanded="${open}" type="button">${open ? 'less' : 'details'}${ic('chev', 14, 2.6, open ? 'up' : 'down')}</button></div>` +
+      (open ? detailsFor(item) : '') + `</div>`;
+  }
+
+  /** "reply in chat": open the Gup chat with a draft that names the item, for a typed answer. */
+  function draftInChat(item) {
+    const c = cardOf(item);
+    const about = item.ticket ? `#${item.ticket}` : (c ? c.title : item.title || item.key);
+    showTab('gup');
+    const input = $('input');
+    const draft = `About ${about}: `;
+    if (!input.value.includes(draft)) input.value = input.value ? input.value.replace(/\s*$/, '\n') + draft : draft;
+    syncComposer();
+    stickBottom(true);
+    input.focus();
+    input.setSelectionRange(input.value.length, input.value.length);
+  }
+
+  /** A suggested reply: its action goes through the same Face ID gate and POST /v1/waiting/act as a button tap (with the
+      reply's text); `chat` replies are plain chat messages (no Face ID: not a decision). */
+  async function tapReply(key, index) {
+    const item = findItem(key), card = item && cardOf(item);
+    const r = card && card.replies.find(x => x.i === index);
+    if (!r || S.acting.has(key)) return;
+    if (r.action === 'chat') {
+      showTab('gup');
+      const p = { client_id: API.newClientId(), text: r.text.trim(), state: 'sending' };
+      S.pending.push(p);
+      S.forceBottom = true;
+      renderChat();
+      trySend(p);
+      return;
+    }
+    if (S.deciding) return;
+    S.deciding = true;
+    try { await decideItem(item, key, r.action, false, { text: r.text, label: r.label, title: card.title }); } finally { S.deciding = false; }
+  }
+
+  function plainCardFor(item) {
     const [label, chipCls] = kindOf(item.kind);
     const src = [item.project && cap(item.project), item.by && cap(item.by)].filter(Boolean).join(' · ');
     const title = (item.ticket ? `#${item.ticket} ` : '') + item.title;
@@ -313,6 +411,7 @@
         ? `<div class="notice g"><b>›</b> Pair this phone with your PC to see what's waiting on you.<br>${pairButton('pair with your PC')}</div>` : '';
       return;
     }
+    for (const k of [...S.open]) if (!items.some(i => i.key === k)) S.open.delete(k);
     const times = items.map(i => Date.parse(i.at)).filter(Boolean);
     $('w-sub').textContent = n
       ? `${n} open${times.length ? ` · oldest ${ago(Math.min(...times))} · newest ${ago(Math.max(...times))}` : ''}`
@@ -398,16 +497,21 @@
     S.deciding = true;                                   // one decision at a time (Face ID prompts are async)
     try { await decideItem(item, key, actionId, write); } finally { S.deciding = false; }
   }
-  async function decideItem(item, key, actionId, write) {
+  async function decideItem(item, key, actionId, write, preset) {
     let action = (item.actions || []).find(a => a.id === actionId);
-    let text = '';
-    if (write || (action && action.text === 'required')) {
+    let text = '', label = action && action.label, title = item.title, needSheet = write;
+    if (preset) {                                         // a suggested reply: its text and wording, nothing typed
+      text = action && action.text !== 'none' ? String(preset.text || '').trim() : '';
+      label = preset.label; title = preset.title;
+      if (action && action.text === 'required' && !text) needSheet = true;
+    } else if (action && action.text === 'required') needSheet = true;
+    if (needSheet) {
       const r = await answerSheet(item, actionId);
       if (!r) return;
-      action = r.action; text = r.text;
+      action = r.action; text = r.text; label = action.label; title = item.title;
     }
     if (!action) return;
-    const confirm = await H.confirmOwnerAction({ key, action: action.id, label: action.label, text, title: item.title });
+    const confirm = await H.confirmOwnerAction({ key, action: action.id, label, text, title });
     if (!confirm) return;
     S.acting.add(key);
     renderWaiting();
@@ -690,8 +794,17 @@
       if (c) { S.filter = c.dataset.filter; renderWaiting(); }
     });
     $('w-list').addEventListener('click', e => {
+      const more = e.target.closest('[data-more]');
+      if (more) {
+        const k = more.dataset.more;
+        if (S.open.has(k)) S.open.delete(k); else S.open.add(k);
+        return renderWaiting();
+      }
       const b = e.target.closest('[data-key]');
-      if (b) decide(b.dataset.key, b.dataset.action, !!b.dataset.write);
+      if (!b) return;
+      if (b.dataset.reply !== undefined) return tapReply(b.dataset.key, Number(b.dataset.reply));
+      if (b.dataset.chatdraft) { const it = findItem(b.dataset.key); if (it) draftInChat(it); return; }
+      decide(b.dataset.key, b.dataset.action, !!b.dataset.write);
     });
     $('s-body').addEventListener('click', e => {
       const b = e.target.closest('[data-go]');

@@ -102,6 +102,33 @@ body.kb .msgs { bottom: calc(var(--kb) + 24px + var(--comp-h, 64px)); }
 .card.wa { box-shadow: inset 0 1px 0 rgba(255,200,120,.55), inset 0 0 0 1px rgba(255,179,71,.22), 0 18px 40px rgba(0,0,0,.45);
   background: linear-gradient(180deg, rgba(255,179,71,.12), rgba(255,255,255,.05)); }
 .card.soon .det { margin-top: 8px; }
+/* compact card: title + 1-2 lines + suggested replies; details one tap away */
+.card.cc { padding: 12px 14px 8px; }
+.ck { display: flex; align-items: center; gap: 8px; margin-bottom: 7px; font-size: 12px; color: var(--mut); min-width: 0; }
+.ck .chip { font-size: 11.5px; padding: 3px 9px; flex: none; }
+.ck .src { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; min-width: 0; }
+.ck .when { margin-left: auto; color: var(--dim); flex: none; }
+.cc .ttl { font-size: 16.5px; line-height: 1.3; }
+.cl { font-size: 13px; line-height: 1.35; color: var(--mut); margin-top: 3px; overflow-wrap: anywhere; }
+.rps { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 10px; }
+.rps .btn { flex: 1 1 auto; height: 38px; min-width: 0; padding: 0 14px; border-radius: 19px; font-size: 14px; }
+.rps .btn span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; min-width: 0; }
+.rps .btn.rec { flex: 1 1 100%; height: 44px; border-radius: 22px; font-size: 15px; font-weight: 800;
+  box-shadow: 0 0 0 2px rgba(255,255,255,.28), 0 6px 20px rgba(47,200,114,.25); }
+.rps .btn.rec.q { background: #fff; color: var(--ink); }
+.rps .btn.rec.no { background: #ff8d98; color: #2a0a0e; }
+.cc .pconly { margin-top: 8px; font-size: 12.5px; }
+.cf { display: flex; align-items: center; justify-content: space-between; margin-top: 4px; }
+.lnk { display: inline-flex; align-items: center; gap: 6px; height: 36px; padding: 0 2px; font-size: 13px; font-weight: 700; color: var(--mut); }
+.lnk:active { color: #fff; }
+.lnk .ic.up { transform: rotate(-90deg); }
+.lnk .ic.down { transform: rotate(90deg); }
+.dt { margin-top: 6px; padding: 10px 0 8px; border-top: 1px solid rgba(255,255,255,.08); }
+.dtt { font-size: 13.5px; font-weight: 800; line-height: 1.4; overflow-wrap: anywhere; -webkit-user-select: text; user-select: text; }
+.dt .det { margin-top: 5px; }
+.dby { display: flex; align-items: center; gap: 8px; margin-top: 9px; font-size: 12px; color: var(--dim); }
+.dt .acts { margin-top: 11px; }
+.dt .acts .btn { height: 42px; font-size: 14px; }
 .allclear { text-align: center; padding: 40px 20px; }
 .allclear .big { font-size: 40px; color: var(--green); margin-bottom: 8px; }
 .notice { margin: 0 14px; padding: 13px 16px; font-size: 13.5px; line-height: 1.5; color: var(--mut); }
