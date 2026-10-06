@@ -6,14 +6,16 @@
      - drag moves: at most 60 a second, newest only, the last point repeated every 500 ms while the finger is still
      - typing: what the hidden text field changed, as the spec's {del, text} (grapheme clusters), plain quotes/dashes,
        2000-character chunks
+     - tap snapping to the PC's AT-SPI targets (a radius in phone points, so it shrinks on the monitor as you zoom in)
+     - the PC's text focus -> the phone keyboard (a small state machine), what the hidden field tells the keyboard, and
+       the pan/zoom that keeps the focused field in view above the keyboard
      - every message the phone sends on the data channels, in the spec's exact shape
      - words for the host's reasons (input off, session ended) */
 (function (root) {
   'use strict';
 
   const VERSIONS = [1];
-  // stage 1, slice 1: no focus / targets yet (keyboard auto-pop and tap snapping are the next slice)
-  const CAPS = ['monitors', 'input', 'type', 'stats'];
+  const CAPS = ['monitors', 'input', 'type', 'focus', 'targets', 'stats'];
   const T = {
     HOLD_MS: 380,              // finger still this long, then it moves: a drag (press, move, release on the PC)
     SLOP: 10,                  // pt a finger may wander and still be a tap / a hold
@@ -24,6 +26,15 @@
     TEXT_MAX: 2000,            // type.text per message
     MSG_MAX: 64 * 1024,
     MAX_PX_PER_VIDEO_PX: 4,    // deepest zoom: one monitor pixel = 4 phone points
+    SNAP_PT: 12,               // a tap snaps to a target whose edge is at most this far from the finger, on the phone's screen
+    SNAP_SMALL_PT: 64,         // a snapped button / link no bigger than this on screen is clicked in its centre
+    SNAP_INSET_PT: 3,          // otherwise at the nearest point this far inside it (text fields, sliders, big things)
+    TARGETS_MAX: 4000,         // items kept from one `targets` message (the PC sends at most ~600)
+    VIEW_MS: 500,              // `view` at most twice a second, once zoom/pan settle
+    VIEW_SETTLE_MS: 250,
+    READ_PT: 30,               // a focused one-line field is zoomed to about this tall on the phone...
+    READ_MIN_PT: 16,           // ...when it shows smaller than this (or not wholly) above the keyboard
+    REVEAL_PAD: 12,            // pt kept around a revealed field
   };
 
   const round5 = v => Math.round(v * 1e5) / 1e5;
@@ -272,6 +283,203 @@
     return out;
   }
 
+  // ---------------------------------------------------------------- targets: tap snapping (cap `targets`)
+  const ROLES = ['button', 'link', 'check', 'radio', 'toggle', 'menu', 'menuitem', 'tab', 'combo', 'text', 'slider', 'item', 'other'];
+  // a missed tap snaps to the centre of these when they're small; anything else (text fields, sliders, list items, big
+  // things) gets the nearest point inside, because where it's clicked matters there (the caret, the slider's value)
+  const CENTRE_ROLES = new Set(['button', 'link', 'check', 'radio', 'toggle', 'menu', 'menuitem', 'tab', 'combo']);
+
+  /** the PC's `targets` message -> {m, gen, source, truncated, items: [{x, y, w, h, role}]}; bad items are dropped */
+  function parseTargets(m) {
+    if (!m || typeof m.m !== 'string' || !Array.isArray(m.items)) return null;
+    const items = [];
+    for (const it of m.items) {
+      if (items.length >= T.TARGETS_MAX) break;
+      if (!Array.isArray(it) || it.length < 4) continue;
+      const [x, y, w, h] = it;
+      if (![x, y, w, h].every(n => typeof n === 'number' && isFinite(n)) || w <= 0 || h <= 0) continue;
+      items.push({ x, y, w, h, role: ROLES.includes(it[4]) ? it[4] : 'other' });
+    }
+    return { m: m.m, gen: typeof m.gen === 'number' ? m.gen : 0, source: m.source === 'none' ? 'none' : 'atspi', truncated: !!m.truncated, items };
+  }
+
+  /** Where a tap at (px, py) in the area should click: {x, y (normalized, 5 digits), target (the item or null), snapped
+      (the point moved), dist (pt from the finger to the target's edge)}. The finger on a target clicks right there
+      (smallest target wins; a role `other` is often a container, so a real target close by beats it); a finger just
+      off one (within SNAP_PT on the phone's screen, so less of the monitor the more you zoom in) clicks the nearest
+      target: a small button / link in its centre, anything else at the nearest point inside. Nothing near: the raw
+      point. */
+  function snapTap(v, px, py, items, opts) {
+    opts = opts || {};
+    const grow = opts.growPt != null ? opts.growPt : T.SNAP_PT;
+    const raw = toNorm(v, px, py);
+    const out = { x: raw.x, y: raw.y, target: null, snapped: false, dist: null };
+    if (!items || !items.length || !raw.inside) return out;
+    const s = scaleOf(v), W = v.vw * s, H = v.vh * s;      // the picture's size on the phone, pt
+    const fx = (px - v.tx) / W, fy = (py - v.ty) / H;
+    let best = null;
+    for (const t of items) {
+      const dx = Math.max(t.x - fx, 0, fx - (t.x + t.w)) * W;
+      const dy = Math.max(t.y - fy, 0, fy - (t.y + t.h)) * H;
+      const d = Math.hypot(dx, dy);
+      if (d > grow) continue;
+      const area = t.w * t.h;
+      // rank: on it (not a container) < near it < a container under the finger; then nearer; then smaller
+      const rank = d === 0 ? (t.role === 'other' ? 2 : 0) : 1;
+      if (!best || rank < best.rank || (rank === best.rank && (d < best.d - 1e-9 || (Math.abs(d - best.d) <= 1e-9 && area < best.area))))
+        best = { t, d, rank, area };
+    }
+    if (!best) return out;
+    const t = best.t;
+    out.target = t;
+    out.dist = Math.round(best.d * 10) / 10;
+    if (best.d === 0) return out;                           // the finger is on it: click right there
+    let nx, ny;
+    if (CENTRE_ROLES.has(t.role) && t.w * W <= T.SNAP_SMALL_PT && t.h * H <= T.SNAP_SMALL_PT) { nx = t.x + t.w / 2; ny = t.y + t.h / 2; }
+    else {
+      const ix = Math.min(T.SNAP_INSET_PT / W, t.w / 2), iy = Math.min(T.SNAP_INSET_PT / H, t.h / 2);
+      nx = clamp(fx, t.x + ix, t.x + t.w - ix);
+      ny = clamp(fy, t.y + iy, t.y + t.h - iy);
+    }
+    out.x = round5(clamp(nx, 0, 1));
+    out.y = round5(clamp(ny, 0, 1));
+    out.snapped = true;
+    return out;
+  }
+
+  /** the targets worth drawing: the ones at least partly in view (at most max), as area rects {x, y, w, h, role} */
+  function targetsInView(v, items, max) {
+    const out = [];
+    if (!items) return out;
+    const s = scaleOf(v), W = v.vw * s, H = v.vh * s;
+    for (const t of items) {
+      const x = v.tx + t.x * W, y = v.ty + t.y * H, w = t.w * W, h = t.h * H;
+      if (x + w < 0 || y + h < 0 || x > v.w || y > v.h) continue;
+      out.push({ x, y, w, h, role: t.role });
+      if (out.length >= (max || 300)) break;
+    }
+    return out;
+  }
+
+  // ---------------------------------------------------------------- the PC's text focus -> the phone keyboard
+  const HINTS = ['text', 'number', 'email', 'url', 'search'];
+  /** the PC's `focus` message -> {m, rect ([x, y, w, h] or null), multiline, secret, hint, app}; null for kind none */
+  function parseFocus(m) {
+    if (!m || m.kind !== 'text') return null;
+    const r = m.rect;
+    const rect = Array.isArray(r) && r.length === 4 && r.every(n => typeof n === 'number' && isFinite(n)) && r[2] > 0 && r[3] > 0 ? r.slice() : null;
+    return { m: typeof m.m === 'string' ? m.m : null, rect, multiline: !!m.multiline, secret: !!m.secret,
+             hint: HINTS.includes(m.hint) ? m.hint : 'text', app: typeof m.app === 'string' ? m.app : '' };
+  }
+  const focusKey = f => f ? JSON.stringify([f.m, f.rect, f.multiline, f.secret, f.hint, f.app]) : '';
+  const sameKind = (a, b) => !!a && !!b && a.secret === b.secret && a.hint === b.hint && a.multiline === b.multiline;
+
+  /** What the hidden field tells the phone keyboard for a PC field (null: opened by hand, no field known). A secret
+      field is a password input (no autocorrect, suggestions or dictation; iOS caches nothing). */
+  function keyboardAttrs(f) {
+    const hint = f ? f.hint : 'text';
+    const words = hint === 'text' || hint === 'search';
+    return {
+      secret: !!(f && f.secret),
+      inputmode: { text: 'text', number: 'decimal', email: 'email', url: 'url', search: 'search' }[hint],
+      enterkeyhint: f && !f.multiline ? (hint === 'search' ? 'search' : 'go') : 'enter',
+      autocorrect: words ? 'on' : 'off',
+      autocapitalize: words && hint !== 'search' ? 'sentences' : 'off',
+      spellcheck: words ? 'true' : 'false',
+    };
+  }
+
+  /** The keyboard's state machine. ctx = {active: the monitor shown, canType: live, input on and the `type` cap}.
+      Every call returns {change: 'open' | 'close' | 'refocus' (open, but the field kind changed: secret / hint /
+      multiline) | 'reset' (open, a different PC field: start the typing buffer over) | null, open, by: 'auto' | 'user',
+      field: the PC's focused field on the shown monitor (or null), elsewhere: the monitor a field got focus on when it
+      isn't the one shown}.
+        pcFocus(msg, ctx)   the PC's `focus`: a text field on the shown monitor opens it (by 'auto') unless the owner
+                            put the keyboard away for that same field; none closes what 'auto' opened (one the owner
+                            opened stays)
+        update(ctx)         the monitor, input or link changed: 'auto' closes when typing can't reach the field, opens
+                            again when it can
+        userOpen(ctx) / userClose()   the keyboard button / the keyboard went away (the owner dismissed it)
+        tapText(ctx, onFocused)   a tap on the focused field (or another text target) while the keyboard is down:
+                            open it now, inside the tap, because the PC sends no new focus for a field that already
+                            has it (another field: no field known until the PC's focus for it comes)
+        reset()             the viewer closed */
+  function createFocusKeyboard() {
+    const s = { focus: null, open: false, by: null, dismissed: null, ctx: { active: null, canType: false } };
+    const here = () => !!(s.focus && s.focus.m === s.ctx.active);
+    const out = change => ({ change, open: s.open, by: s.by, field: here() ? s.focus : null,
+                              elsewhere: s.focus && s.focus.m && !here() ? s.focus.m : null });
+    const take = ctx => { if (ctx) s.ctx = { active: ctx.active || null, canType: !!ctx.canType }; };
+    function open(by) { s.open = true; s.by = by; return out('open'); }
+    function close() { s.open = false; s.by = null; return out('close'); }
+    return {
+      pcFocus(m, ctx) {
+        take(ctx);
+        const prev = s.focus, f = parseFocus(m);
+        const moved = focusKey(prev) !== focusKey(f);
+        s.focus = f;
+        if (!f) {
+          s.dismissed = null;
+          if (s.open && s.by === 'auto') return close();
+          return out(s.open && moved ? 'reset' : null);
+        }
+        if (!here() || !s.ctx.canType) {
+          if (s.open && s.by === 'auto') return close();
+          return out(s.open && moved ? 'reset' : null);
+        }
+        if (s.open) return out(!moved ? null : sameKind(prev, f) ? 'reset' : 'refocus');
+        if (s.dismissed && s.dismissed === focusKey(f)) return out(null);
+        s.dismissed = null;
+        return open('auto');
+      },
+      update(ctx) {
+        take(ctx);
+        const want = here() && s.ctx.canType;
+        if (s.open && s.by === 'auto' && !want) return close();
+        if (!s.open && want && s.dismissed !== focusKey(s.focus)) return open('auto');
+        return out(null);
+      },
+      userOpen(ctx) { take(ctx); return s.open ? out(null) : open('user'); },
+      userClose() {
+        if (!s.open) return out(null);
+        s.dismissed = focusKey(s.focus) || null;
+        return close();
+      },
+      tapText(ctx, onFocused) {
+        take(ctx);
+        if (s.open || !s.ctx.canType) return out(null);
+        s.dismissed = null;
+        if (!onFocused) s.focus = null;                     // the click moves the PC's focus: its new field comes next
+        return open('auto');
+      },
+      reset() { Object.assign(s, { focus: null, open: false, by: null, dismissed: null }); return out(null); },
+      get state() { return { focus: s.focus, open: s.open, by: s.by, dismissed: s.dismissed }; },
+    };
+  }
+
+  /** The view moved so a PC field (normalized rect) shows in the area (the stream above the keyboard): a field that
+      already shows whole and readable (a multi-line one: filling half the view) stays put; else a one-line field is
+      zoomed to about READ_PT tall (the owner's deeper zoom kept), a multi-line one to the area's width, never more
+      than fits, then centred (a field taller or wider than the area: its top / left edge). Returns a new view. */
+  function revealRect(v, rect, opts) {
+    opts = opts || {};
+    const pad = opts.pad != null ? opts.pad : T.REVEAL_PAD;
+    const n = Object.assign({}, v);
+    const [rx, ry, rw, rh] = rect;
+    const on = (sc, tx, ty) => ({ x: tx + rx * n.vw * sc, y: ty + ry * n.vh * sc, w: rw * n.vw * sc, h: rh * n.vh * sc });
+    const s0 = scaleOf(n), a = on(s0, n.tx, n.ty);
+    const whole = a.x >= -0.5 && a.y >= -0.5 && a.x + a.w <= n.w + 0.5 && a.y + a.h <= n.h + 0.5;
+    const ix = Math.max(0, Math.min(a.x + a.w, n.w) - Math.max(a.x, 0)), iy = Math.max(0, Math.min(a.y + a.h, n.h) - Math.max(a.y, 0));
+    if (opts.multiline ? (whole || ix * iy >= n.w * n.h / 2) : (whole && a.h >= T.READ_MIN_PT)) return n;
+    const fitW = (n.w - 2 * pad) / (rw * n.vw), fitH = (n.h - 2 * pad) / (rh * n.vh);
+    const want = opts.multiline ? fitW : Math.min(Math.max(T.READ_PT / (rh * n.vh), s0), fitW, fitH);
+    n.z = clamp(want / n.fit, 1, maxZoom(n));
+    const s1 = scaleOf(n), b = on(s1, 0, 0);
+    n.tx = b.w <= n.w - 2 * pad ? (n.w - b.w) / 2 - b.x : pad - b.x;
+    n.ty = b.h <= n.h - 2 * pad ? (n.h - b.h) / 2 - b.y : pad - b.y;
+    return clampView(n);
+  }
+
   // ---------------------------------------------------------------- messages (phone -> PC), the spec's shapes
   const msg = {
     hello(o) {
@@ -355,6 +563,7 @@
     VERSIONS, CAPS, T, round5, clamp,
     makeView, clampView, zoomAt, panBy, resize, toNorm, toArea, visibleRect, scaleOf, maxZoom,
     createGestures, createMover,
+    ROLES, parseTargets, snapTap, targetsInView, parseFocus, focusKey, keyboardAttrs, createFocusKeyboard, revealRect,
     graphemes, plain, diffText, chunkText,
     msg, encode, inputOffText, endedText, monitorSpec,
   };

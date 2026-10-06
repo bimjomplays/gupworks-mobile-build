@@ -44,7 +44,8 @@ private struct IssuedConfirm {
 ///
 /// ops: hello · request {id, method, path, query, body, timeoutMs} · cancel {id} · pair.start · pair.stop ·
 ///      pair.torch {on} · pair.enter · pair.forget · settings · unlock {passcode} · lock.peek ·
-///      confirm {key, action, label, title, clockOffsetMs, reuse, reuseOnly} · voice.start {tag} · voice.stop · voice.cancel
+///      confirm {key, action, label, title, clockOffsetMs, reuse, reuseOnly} · voice.start {tag} · voice.stop · voice.cancel ·
+///      keyboard.allow (a PC text field got focus: the page's next focus() may show the keyboard, see KeyboardFocus)
 /// events: pair {state: checking | paired | failed, ...} ·
 ///         lock {locked, state: idle | checking | cancelled | failed | no_passcode, biometry, passcode} ·
 ///         voice {tag, state: listening | stopped, text, reason} or {tag, level}
@@ -56,6 +57,8 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
     weak var host: BridgeHost?
     let scanner = QRScanner()
     let voice = VoiceInput()
+    /// the web view's input delegate (installed by WebViewController): one allowed keyboard focus at a time
+    let keyboard = KeyboardFocus()
     /// true when a message comes from the app's own page (main frame, a file inside the bundled web/)
     var isTrustedPage: (URL) -> Bool = { _ in false }
 
@@ -180,6 +183,8 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         case "voice.cancel":
             voice.cancel()
             replyHandler(nil, nil)
+        case "keyboard.allow":
+            replyHandler(["allowed": keyboard.allowNextFocus()], nil)
         case "settings":
             if let url = URL(string: UIApplication.openSettingsURLString) { UIApplication.shared.open(url) }
             replyHandler(nil, nil)
@@ -194,6 +199,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         cancelAll()
         stopScanning()
         voice.cancel()
+        keyboard.reset()
     }
 
     private func cancelAll() {
@@ -236,6 +242,7 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         endDesktopSession()
         codeAlert?.dismiss(animated: false)
         voice.cancel()
+        keyboard.reset()
         if !locked {
             locked = true
             cancelAll()

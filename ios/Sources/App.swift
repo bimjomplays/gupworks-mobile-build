@@ -73,6 +73,8 @@ final class WebViewController: UIViewController, WKNavigationDelegate, WKUIDeleg
         #endif
 
         bridge.webView = webView
+        // the Desktop tab's keyboard opens by itself when a PC text field gets focus (one allowed focus at a time)
+        bridge.keyboard.install(on: webView)
         bridge.host = self
         bridge.isTrustedPage = { [weak self] url in self?.isInsideWebRoot(url) ?? false }
         let root = UIView()

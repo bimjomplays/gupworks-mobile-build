@@ -6,8 +6,14 @@
    against the spec's shapes; anything off lands in `violations` (the tests want that empty). Demo data only.
      const desk = GupMockDesk.create({state: 'ok' | 'off' | 'nogrant' | 'down'})
      desk.status() / desk.start(body) / desk.answer(id, body) / desk.end(id)   -> {status, json}   (mock.js routes)
-   Test hooks: desk.log, desk.violations, desk.clicks, desk.drags, desk.text, desk.sessions, desk.endFromPC(reason),
-     desk.setInput(enabled, reason), desk.drop(), desk.unplug(), desk.set({state, reason}). */
+   Slice 2 (caps focus + targets): the "monitor" has AT-SPI-like targets (buttons, a link, text fields) sent as
+   `targets` after welcome and on every monitor change; a click in a text field gives it the PC's keyboard focus
+   (`focus` kind text after 150 ms, like the real host's debounce), a click anywhere else takes it away (kind none).
+   Typing goes into the field that has focus (Kate's editor until another field is clicked).
+   Test hooks: desk.log, desk.violations, desk.clicks, desk.drags, desk.text (Kate's), desk.fields, desk.focused,
+     desk.sessions, desk.endFromPC(reason), desk.setInput(enabled, reason), desk.drop(), desk.unplug(),
+     desk.set({state, reason}), desk.targets(monitor) (the normalized items), desk.field(name, monitor) (its rect),
+     desk.focusField(name | null, {m}) (focus moves on the PC by itself), desk.sendTargets(items?). */
 (function (root) {
   'use strict';
 
@@ -28,12 +34,21 @@
   const is5 = v => typeof v === 'number' && isFinite(v) && Math.abs(v * 1e5 - Math.round(v * 1e5)) < 1e-6;
   const inUnit = v => is5(v) && v >= -0.01 && v <= 1.01;
   const graphemes = s => Array.from(new Intl.Segmenter(undefined, { granularity: 'grapheme' }).segment(s), x => x.segment);
+  const r5 = v => Math.round(v * 1e5) / 1e5;
+  // what's on the "monitor", in a 1280-wide space (k = canvas width / 1280; y runs to canvas height / k)
+  const FIELDS = {
+    kate: { r: [40, 66, 620, 354], multiline: true, hint: 'text', app: 'kate' },
+    search: { r: [720, 170, 300, 34], multiline: false, hint: 'search', app: 'firefox' },
+    pass: { r: [720, 220, 300, 34], multiline: false, hint: 'text', secret: true, app: 'firefox' },
+  };
+  const BUTTONS = [[720, 80, 220, 64, 'button'], [636, 44, 18, 18, 'button'], [720, 270, 90, 18, 'link']];
 
   function create(opts) {
     opts = opts || {};
     const cfg = { state: opts.state || 'ok', reason: null };
     const log = [], violations = [], clicks = [], drags = [], sessions = [];
-    let text = '';
+    const fields = { kate: '', search: '', pass: '' };
+    let typeInto = 'kate', focused = null, focusTimer = null, gen = 0;
     let s = null;                 // the current session
     let lastMonitor = null;
 
@@ -55,8 +70,20 @@
       g.fillStyle = '#2a2e37'; g.fillRect(40 * k, 40 * k, 620 * k, 26 * k);
       g.fillStyle = '#d6d9e2'; g.font = `${14 * k}px monospace`; g.fillText(`notes.md – Kate · ${active}`, 52 * k, 58 * k);
       g.fillStyle = '#e6e9f4'; g.font = `${18 * k}px monospace`;
-      const lines = (text + (frame % 20 < 10 ? '▏' : ' ')).split('\n').slice(-14);
+      const caret = s => s + (frame % 20 < 10 ? '▏' : ' ');
+      const lines = (typeInto === 'kate' ? caret(fields.kate) : fields.kate).split('\n').slice(-14);
       lines.forEach((l, i) => g.fillText(l.slice(-48), 56 * k, (96 + i * 22) * k));
+      g.fillStyle = '#8d93a8'; g.fillText('×', 639 * k, 59 * k);
+      // two web form fields, a link, the PC's own focus ring on the focused field
+      for (const name of ['search', 'pass']) {
+        const [x, y, w, h] = FIELDS[name].r;
+        g.fillStyle = '#f4f5f9'; g.fillRect(x * k, y * k, w * k, h * k);
+        g.fillStyle = '#1c1e28'; g.font = `${16 * k}px sans-serif`;
+        const v = name === 'pass' ? '•'.repeat(graphemes(fields.pass).length) : fields.search;
+        g.fillText(v ? (typeInto === name ? caret(v) : v) : (name === 'pass' ? 'password' : 'search'), (x + 10) * k, (y + 23) * k);
+      }
+      g.fillStyle = '#9fb4ff'; g.font = `${15 * k}px sans-serif`; g.fillText('help', 724 * k, 284 * k);
+      if (focused) { const [x, y, w, h] = FIELDS[focused].r; g.strokeStyle = '#4d8bff'; g.lineWidth = 3 * k; g.strokeRect(x * k, y * k, w * k, h * k); }
       // a button that lights up when clicked
       g.fillStyle = flash > 0 ? '#ff9a4d' : '#e0663b'; g.fillRect(720 * k, 80 * k, 220 * k, 64 * k);
       g.fillStyle = '#fff'; g.font = `bold ${20 * k}px sans-serif`; g.fillText('Click me', 770 * k, 120 * k);
@@ -71,6 +98,7 @@
       if (c && c.m === active) { g.strokeStyle = '#fff'; g.lineWidth = 3 * k; g.beginPath(); g.arc(c.x * W, c.y * H, 14 * k, 0, 7); g.stroke(); }
       // the panel with a clock (so the picture always changes a little)
       g.fillStyle = 'rgba(10,12,22,.92)'; g.fillRect(0, H - 40 * k, W, 40 * k);
+      g.fillStyle = '#3a3f58'; for (const b of panelButtons(active)) g.fillRect(b[0] * k, b[1] * k, b[2] * k, b[3] * k);
       g.fillStyle = '#aeb4cc'; g.font = `${15 * k}px sans-serif`; g.fillText(new Date().toLocaleTimeString(), W - 120 * k, H - 14 * k);
       if (held) { g.fillStyle = 'rgba(126,224,143,.5)'; g.beginPath(); g.arc(held[0] * W, held[1] * H, 18 * k, 0, 7); g.fill(); }
     }
@@ -81,6 +109,36 @@
     const monitorsMsg = reason => Object.assign({ t: 'monitors', active, list: JSON.parse(JSON.stringify(MONITORS)) }, reason ? { reason } : {});
     function inputMsg() { return { t: 'input_state', enabled: s.input.enabled, reason: s.input.enabled ? null : s.input.reason }; }
     const caps = c => s && s.caps.includes(c);
+
+    // ---------------------------------------------------------------- AT-SPI stand-in: targets and text focus
+    function norm(id, r) { const [W, H] = CANVAS[id], k = W / 1280; return [r5(r[0] / 1280), r5(r[1] * k / H), r5(r[2] / 1280), r5(r[3] * k / H)]; }
+    function panelButtons(id) { const [W, H] = CANVAS[id], hk = H / (W / 1280); return [0, 1, 2, 3].map(i => [12 + i * 44, hk - 36, 32, 32, 'button']); }
+    function targetItems(id) {
+      return BUTTONS.concat(panelButtons(id)).map(b => norm(id, b).concat(b[4]))
+        .concat(Object.values(FIELDS).map(f => norm(id, f.r).concat('text')));
+    }
+    function fieldAt(x, y) {
+      for (const [name, f] of Object.entries(FIELDS)) {
+        const [fx, fy, fw, fh] = norm(active, f.r);
+        if (x >= fx && x <= fx + fw && y >= fy && y <= fy + fh) return name;
+      }
+      return null;
+    }
+    function focusMsg(name, m) {
+      if (!name) return { t: 'focus', kind: 'none' };
+      const f = FIELDS[name];
+      return { t: 'focus', kind: 'text', m: m || active, rect: norm(m || active, f.r), multiline: f.multiline, secret: !!f.secret, hint: f.hint, app: f.app };
+    }
+    function sendTargets(items) {
+      if (caps('targets')) sendCtl({ t: 'targets', m: active, gen: ++gen, source: 'atspi', truncated: false, items: items || targetItems(active) });
+    }
+    /** keyboard focus moves on the PC: typing goes there; the phone hears about it 150 ms later (the host's debounce) */
+    function setFocus(name, m) {
+      focused = name || null;
+      if (name) typeInto = name;
+      clearTimeout(focusTimer);
+      focusTimer = setTimeout(() => { if (caps('focus')) sendCtl(focusMsg(focused, m)); }, 150);
+    }
 
     function finish(sess, reason, sendBye) {
       if (!sess || sess.state === 'ended') return;
@@ -136,7 +194,8 @@
           sendCtl(monitorsMsg());
           sendCtl({ t: 'indicator', shown: true });
           sendCtl(inputMsg());
-          if (caps('focus')) sendCtl({ t: 'focus', kind: 'none' });
+          if (caps('focus')) sendCtl(focusMsg(focused));
+          sendTargets();
           s.pinger = setInterval(() => sendCtl({ t: 'ping', ts: Math.round(performance.now()) }), 2000);
           return;
         }
@@ -155,7 +214,9 @@
           closeDrag('cancelled');
           clicks.push({ m: m.m, x: m.x, y: m.y, count: m.count || 1 });
           flash = 8;
-          return reply(m);
+          reply(m);
+          { const fld = fieldAt(m.x, m.y); if (fld !== focused) setFocus(fld); }
+          return;
         case 'drag_start':
           if (!caps('input')) return fail(m, 'unsupported', 'input');
           if (!idOk(m, false) || !checkM(m) || !xy(m)) return;
@@ -192,8 +253,8 @@
           if (!idOk(m, false) || !Number.isInteger(m.del) || m.del < 0 || typeof m.text !== 'string') return violation(m, 'type shape');
           if (graphemes(m.text).length > 2000) { violation(m, 'type over 2000'); return fail(m, 'too_large', 'text'); }
           if (!inputOk(m)) return;
-          const chars = graphemes(text);
-          text = chars.slice(0, Math.max(0, chars.length - m.del)).join('') + m.text.replace(/\r\n/g, '\n');
+          const chars = graphemes(fields[typeInto]);
+          fields[typeInto] = chars.slice(0, Math.max(0, chars.length - m.del)).join('') + m.text.replace(/\r\n/g, '\n');
           return reply(m, { typed: graphemes(m.text).length, skipped: '' });
         }
         case 'select_monitor': {
@@ -205,11 +266,14 @@
             active = m.monitor; lastMonitor = active; size(active); paint();
             reply(m);
             sendCtl(monitorsMsg());
+            sendTargets();
           }, 120);
           return;
         }
         case 'view':
-          if (!Array.isArray(m.rect) || m.rect.length !== 4) violation(m, 'view.rect');
+          if (!caps('targets')) return violation(m, 'view without the targets cap');
+          if (typeof m.m !== 'string' || !Array.isArray(m.rect) || m.rect.length !== 4 || !m.rect.every(inUnit) || m.id !== undefined) violation(m, 'view shape');
+          s.views.push(m);
           return;
         default:
           violation(m, 'not a stage-1 phone message');
@@ -230,7 +294,7 @@
       if (!painter) painter = setInterval(paint, 66);
       const pc = new RTCPeerConnection({ iceServers: [] });
       const sess = { id: b64id(), pc, state: 'offered', hello: null, caps: [], drag: null, input: { enabled: true, reason: null },
-                     stats: [], device: body.device || null, body: JSON.parse(JSON.stringify(body)), answered: false };
+                     stats: [], views: [], device: body.device || null, body: JSON.parse(JSON.stringify(body)), answered: false };
       s = sess;
       sessions.push(sess);
       const stream = canvas.captureStream(15);
@@ -278,7 +342,13 @@
     return {
       status, start, answer, end,
       log, violations, clicks, drags, sessions, canvas,
-      get text() { return text; },
+      get text() { return fields.kate; },
+      get fields() { return Object.assign({}, fields); },
+      get focused() { return focused; },
+      targets: id => targetItems(id || active),
+      field: (name, id) => norm(id || active, FIELDS[name].r),
+      focusField(name, o) { setFocus(name, o && o.m); },
+      sendTargets(items) { sendTargets(items); },
       get active() { return active; },
       get session() { return s; },
       set(o) { Object.assign(cfg, o); },
@@ -297,6 +367,7 @@
         closeDrag('cancelled');
         active = MONITORS.find(m => m.id !== active).id; size(active); paint();
         sendCtl(monitorsMsg('unplugged'));
+        sendTargets();
       },
     };
   }

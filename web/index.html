@@ -70,7 +70,7 @@
 
   <!-- Desktop viewer: the whole monitor, full screen (desktop.js). Pinch zoom, drag pan, tap clicks, hold then move drags. -->
   <section class="desk hidden" id="desk" aria-label="PC screen">
-    <div class="dstream" id="d-stream"><video id="d-video" playsinline muted autoplay disablepictureinpicture></video><div class="dfx" id="d-fx"></div></div>
+    <div class="dstream" id="d-stream"><video id="d-video" playsinline muted autoplay disablepictureinpicture></video><div class="dtgt" id="d-tgt"></div><i class="dfocus hidden" id="d-focus"></i><div class="dfx" id="d-fx"></div></div>
     <div class="vtop g" id="d-top">
       <button class="bk" id="d-back" type="button" aria-label="Disconnect"></button>
       <button class="mi" id="d-mon" type="button" aria-label="Monitors"></button>
@@ -81,9 +81,13 @@
     <div class="dnote g hidden" id="d-note" role="status"></div>
     <div class="zhint g" id="d-hint"></div>
     <div class="mini g hidden" id="d-mini"><div class="m" id="d-mini-m"><canvas id="d-mini-c"></canvas><span class="vp" id="d-mini-vp"></span></div><span class="z" id="d-mini-z"></span></div>
-    <!-- what the phone keyboard types goes through this field to the PC (autocorrect and dictation on) -->
+    <button class="atchip hidden" id="d-at" type="button"></button>
+    <!-- what the phone keyboard types goes through this field to the PC (autocorrect and dictation on); a PC password
+         field types through the password input instead (no autocorrect, suggestions or dictation) -->
     <textarea id="d-kbd" class="dkbd" rows="1" autocomplete="off" autocorrect="on" autocapitalize="sentences" spellcheck="true"
               enterkeyhint="enter" aria-label="Type on the PC"></textarea>
+    <input id="d-kbd-secret" class="dkbd" type="password" autocomplete="off" autocorrect="off" autocapitalize="off" spellcheck="false"
+           enterkeyhint="go" aria-label="Type a password on the PC">
   </section>
 </div>
 

@@ -1,15 +1,18 @@
-/* The Desktop tab (look D, mockups/gen.py screens 7-12): the phone's remote desktop, stage 1 slice 1.
+/* The Desktop tab (look D, mockups/gen.py screens 7-12): the phone's remote desktop, stage 1.
    Home = the monitor picker (or why the PC can't stream: never a dialog on the PC); "view" runs Face ID, then
    GupDeskLink opens the session (signaling through GupAPI / the shell's bridge, WebRTC on the tailnet) and the viewer
    shows the whole monitor: pinch zoom, one-finger pan when zoomed, minimap + hint, tap = click, hold then move = drag,
    switch monitor, keyboard button (the phone keyboard types into the PC), input-off reasons, PC ended / dropped /
    reconnect, and the app lock (the session ends on the way to the background; Face ID resumes it).
+   Slice 2 (cap focus + targets): taps snap to the PC's AT-SPI targets near the finger (outlines show while a finger is
+   down, the hit one lights up, mockup 8), and the phone keyboard opens by itself when a PC text field gets focus
+   (mockup 9: the field outlined and panned / zoomed into view above the keyboard; a password field gets a password
+   input), closing again when the focus leaves it or the owner puts it away.
      GupDesk.show() / hide()          the tab came into / left view
      GupDesk.lock() / unlocked()      the shell locked (app to the background) / Face ID passed again
      GupDesk.reset()                  unpaired / pairing changed
      GupDesk.state                    for tests
-   Not in this slice: window list, fit-to-phone, key bar, trackpad, right-click, scroll, clipboard, keyboard opening by
-   itself on PC focus, tap snapping to AT-SPI targets. */
+   Not in stage 1: window list, fit-to-phone, key bar, trackpad, right-click, scroll, clipboard. */
 (function (root) {
   'use strict';
   const API = root.GupAPI, H = root.GupHooks, C = root.GupDeskCore, Link = root.GupDeskLink;
@@ -33,7 +36,15 @@
     gestures: null, mover: null, drag: null, dragSeq: 0, dragCount: 0, lastTap: null,
     typing: { sent: '', composing: false, busy: Promise.resolve() },
     hintUntil: 0, sent: [],
+    targets: null,                    // the PC's last `targets` ({m, gen, items}), only used while m is the monitor shown
+    tgtShown: false, tgtTimer: null, viewTimer: null, viewAt: -Infinity, viewSent: '',
+    // the keyboard: the focus state machine, which hidden field (secret = the password one), who opened it, the field
+    // to keep in view (reveal), whether the phone keyboard failed to come up without a tap (needTap)
+    kb: { sm: C.createFocusKeyboard(), secret: false, by: null, field: null, token: 0, quiet: false, needTap: false,
+          reveal: null, revealTimer: null, checkTimer: null, atUntil: 0, atTimer: null },
   };
+  const KB_CHECK_MS = 900;            // the phone keyboard should be up by then; else a "tap to type" chip
+  const AT_MS = 3000;                 // "keyboard opened for you" stays this long
   const now = () => performance.now();
 
   // ================================================================= tab screens (home, connecting, disconnected)
@@ -217,6 +228,9 @@
     D.active = null;                                 // known only from the PC's first `monitors`
     D.switching = null;
     D.typing.sent = '';
+    D.targets = null;
+    D.viewSent = '';
+    D.kb.sm.reset();
     const link = Link.start({
       monitor, confirm, app: APP_VERSION,
       viewport: { w: root.innerWidth, h: root.innerHeight, scale: root.devicePixelRatio || 1 },
@@ -323,9 +337,13 @@
     if (D.thumbTimer) { clearInterval(D.thumbTimer); D.thumbTimer = null; }
     const v = $('d-video');
     v.srcObject = null;
-    kbdClose();
+    kbApply(D.kb.sm.reset());
+    kbdHide();
     closeMonitorSheet();
     D.stalled = false;
+    D.targets = null;
+    showTargets(false);
+    clearTimeout(D.viewTimer);
   }
 
   /** user leaves: end on the PC, back to the picker */
@@ -362,10 +380,12 @@
           D.switching = null;
           if (D.mover) D.mover.stop();
           D.drag = null;
-          setTimeout(renderNote, C.T.SWITCH_GUARD_MS + 20);
+          setTimeout(() => { renderNote(); kbApply(D.kb.sm.update(kctx())); }, C.T.SWITCH_GUARD_MS + 20);
         }
+        if (changed) { D.targets = null; D.viewSent = ''; showTargets(false); }   // the old monitor's targets mean nothing here
         layout(true);
         renderTop(); renderNote(); renderMonitorSheet();
+        kbApply(D.kb.sm.update(kctx()));
         return;
       }
       case 'indicator': D.indicator = m.shown !== false; renderTop(); return;
@@ -373,7 +393,24 @@
         D.input = { enabled: !!m.enabled, reason: m.enabled ? null : (m.reason || null) };
         if (!m.enabled && D.drag) { D.mover.stop(); D.drag = null; }
         renderTop(); renderNote();
+        kbApply(D.kb.sm.update(kctx()));
         return;
+      case 'focus': {
+        if (!D.link || !D.link.has('focus')) return;
+        const r = D.kb.sm.pcFocus(m, kctx());
+        kbApply(r);
+        if (r.elsewhere && m.kind === 'text') note(`text field focused on ${r.elsewhere}`, 3000);
+        return;
+      }
+      case 'targets': {
+        if (!D.link || !D.link.has('targets')) return;
+        const t = C.parseTargets(m);
+        if (!t || (D.targets && t.m === D.targets.m && t.gen < D.targets.gen)) return;   // an older list overtaken
+        D.targets = t;
+        if (D.tgtShown) renderTargets();
+        renderHint();
+        return;
+      }
       case 'drag_cancelled':
         if (D.drag && D.drag.id === m.drag) { D.mover.stop(); D.drag = null; dragFx(null); note('the PC let go of the drag', 2000); }
         return;
@@ -398,6 +435,9 @@
     const area = { w: r.width, h: r.height };
     if (!D.view || newPicture && (Math.abs(vw / vh - D.view.vw / D.view.vh) > 0.01)) D.view = C.makeView(area, vw, vh);
     else D.view = C.resize(D.view, area, vw, vh);
+    // the keyboard is coming up (the area shrinks): the focused field stays in view above it
+    const rv = D.kb.reveal;
+    if (rv && now() < rv.until && kbdOpen()) D.view = C.revealRect(D.view, rv.rect, { multiline: rv.multiline });
     paintView();
   }
 
@@ -408,6 +448,25 @@
     el.style.height = v.vh * v.fit + 'px';
     el.style.transform = `translate(${v.tx}px, ${v.ty}px) scale(${v.z})`;
     renderMini();
+    renderFocusBox();
+    if (D.tgtShown) renderTargets();
+    scheduleView();
+  }
+
+  /** `view`: the part of the monitor on the phone, once zoom / pan settle, at most twice a second (the PC keeps those
+      targets first when it has to cut its list) */
+  function scheduleView() {
+    if (!D.link || !D.link.has('targets') || !D.active || !D.view) return;
+    clearTimeout(D.viewTimer);
+    D.viewTimer = setTimeout(() => {
+      D.viewTimer = null;
+      if (!D.link || D.link.state !== 'live' || !D.active || !D.view) return;
+      if (D.switching || now() < D.guardUntil) return scheduleView();          // after the switch guard: the new monitor's view
+      const rect = C.visibleRect(D.view);
+      const key = D.active + rect.join(',');
+      if (key === D.viewSent) return;
+      if (D.link.send(C.msg.view(D.active, rect)) !== false) { D.viewSent = key; D.viewAt = now(); }
+    }, Math.max(C.T.VIEW_SETTLE_MS, D.viewAt + C.T.VIEW_MS - now()));
   }
 
   function renderTop() {
@@ -416,7 +475,7 @@
     const [vw, vh] = videoSize();
     $('d-title').textContent = `${D.active || 'monitor'} · whole monitor`;
     const bits = [];
-    if (kbdOpen()) bits.push('typing into the PC');
+    if (kbdOpen()) bits.push(D.kb.secret ? 'typing a password' : 'typing into the PC');
     else bits.push(m ? C.monitorSpec(m).split(' · ')[0] : `${vw}×${vh}`);
     if (D.rtt != null) bits.push(D.rtt + ' ms');
     if (D.fps != null && !kbdOpen()) bits.push(Math.round(D.fps) + ' fps');
@@ -424,7 +483,7 @@
     const chip = $('d-chip');
     if (!D.input.enabled) { chip.className = 'chip c-a dot'; chip.textContent = 'view only'; }
     else if (!D.indicator) { chip.className = 'chip c-a dot'; chip.textContent = 'no badge'; }
-    else if (kbdOpen()) { chip.className = 'chip c-i'; chip.innerHTML = `${ic('keyboard', 13, 2.2)} typing`; }
+    else if (kbdOpen()) { chip.className = 'chip c-i'; chip.innerHTML = `${ic('keyboard', 13, 2.2)} ${D.kb.by === 'auto' ? 'auto' : 'typing'}`; }
     else { chip.className = 'chip c-g dot'; chip.textContent = 'live'; }
     $('d-kbd-btn').classList.toggle('on', kbdOpen());
   }
@@ -450,6 +509,7 @@
 
   function renderHint() {
     $('d-hint').classList.toggle('hidden', now() > D.hintUntil || kbdOpen());
+    $('d-hint-tap').innerHTML = liveTargets() ? '<b>tap</b> snaps to targets' : '<b>tap</b> clicks · <b>hold</b> drags';
   }
 
   function renderMini() {
@@ -513,6 +573,12 @@
     el.style.left = p.x + 'px'; el.style.top = p.y + 'px';
   }
 
+  /** the PC's targets for the monitor shown (null: none, another monitor's, or the cap isn't on) */
+  function liveTargets() {
+    const t = D.targets;
+    return t && D.link && D.link.has('targets') && t.m === D.active && t.items.length ? t.items : null;
+  }
+
   function onTap(x, y) {
     const v = D.view;
     if (!v) return;
@@ -520,12 +586,70 @@
     if (!n.inside) return;
     if (!canInput('clicks')) return;
     // a quick second tap close by lands exactly on the first one, so the PC sees a double click
-    let p = n;
+    let p;
     const t = now();
     if (D.lastTap && t - D.lastTap.t < C.T.DOUBLE_MS && Math.hypot(x - D.lastTap.px, y - D.lastTap.py) < C.T.DOUBLE_PT && D.lastTap.m === D.active) p = D.lastTap.n;
+    else p = C.snapTap(v, x, y, liveTargets());          // the nearest AT-SPI target close to the finger, else right here
     D.lastTap = { t, px: x, py: y, n: p, m: D.active };
-    ripple(x, y);
+    const at = p.snapped ? C.toArea(v, p.x, p.y) : { x, y };
+    ripple(at.x, at.y);
+    if (p.target && (p.snapped || p.target.role !== 'other')) hitFx(p.target, p.snapped);   // no big box for a container
+    // the PC's focused field (or a text target) tapped while the keyboard is down: up it comes, inside this tap
+    const f = D.kb.sm.state.focus;
+    const onFocused = !!(f && f.rect && f.m === D.active && inRect(f.rect, p));
+    const onField = onFocused || (p.target && p.target.role === 'text');
+    if (onField && D.link.has('type')) {
+      // another text field than the focused one: a plain keyboard until the PC's focus for it arrives
+      const r = D.kb.sm.tapText(kctx(), onFocused);
+      kbApply(r, true);
+      // the PC normally answers with a text focus; if it stays "none" (the list was stale, the field wasn't one) the
+      // keyboard goes away again by itself
+      if (r.change === 'open' && !onFocused && D.link.has('focus')) {
+        setTimeout(() => { const st = D.kb.sm.state; if (!st.focus && st.open && st.by === 'auto') kbApply(D.kb.sm.pcFocus({ kind: 'none' }, kctx())); }, 1500);
+      }
+    }
     D.link.request(C.msg.tap(0, D.active, p.x, p.y)).then(answer => onAnswer(answer, 'tap'));
+  }
+  const inRect = (r, p) => p.x >= r[0] && p.x <= r[0] + r[2] && p.y >= r[1] && p.y <= r[1] + r[3];
+
+  /** the target a tap went to lights up (mockup 8), with a tip when the tap moved to it */
+  function hitFx(tg, snapped) {
+    const v = D.view, s = C.scaleOf(v);
+    const x = v.tx + tg.x * v.vw * s, y = v.ty + tg.y * v.vh * s, w = tg.w * v.vw * s, h = tg.h * v.vh * s;
+    const box = document.createElement('i');
+    box.className = 'thit';
+    Object.assign(box.style, { left: x + 'px', top: y + 'px', width: w + 'px', height: h + 'px' });
+    $('d-fx').appendChild(box);
+    setTimeout(() => box.remove(), 700);
+    if (!snapped) return;
+    const tip = document.createElement('span');
+    tip.className = 'ttip';
+    tip.textContent = `tap snapped → ${tg.role}`;
+    tip.style.left = Math.max(8, Math.min(x, v.w - 200)) + 'px';
+    tip.style.top = (y + h + 34 < v.h ? y + h + 8 : Math.max(8, y - 34)) + 'px';
+    $('d-fx').appendChild(tip);
+    setTimeout(() => tip.remove(), 1100);
+  }
+
+  // ---------------------------------------------------------------- the PC's targets, outlined while a finger is down
+  function showTargets(on) {
+    clearTimeout(D.tgtTimer);
+    D.tgtTimer = null;
+    if (on && !liveTargets()) on = false;
+    D.tgtShown = on;
+    $('d-tgt').classList.toggle('on', on);
+    if (on) renderTargets();
+  }
+  /** after the last finger lifts the outlines fade out */
+  function fadeTargets() {
+    clearTimeout(D.tgtTimer);
+    D.tgtTimer = setTimeout(() => showTargets(false), 900);
+  }
+  function renderTargets() {
+    const items = liveTargets();
+    if (!items || !D.view) { $('d-tgt').innerHTML = ''; return; }
+    $('d-tgt').innerHTML = C.targetsInView(D.view, items, 250).map(r =>
+      `<i style="left:${r.x.toFixed(1)}px;top:${r.y.toFixed(1)}px;width:${r.w.toFixed(1)}px;height:${r.h.toFixed(1)}px"></i>`).join('');
   }
 
   function onAnswer(a, what) {
@@ -576,10 +700,11 @@
     });
     D.gestures = C.createGestures({
       tap: (x, y) => onTap(x, y),
-      panStart: () => {},
+      panStart: () => { D.kb.reveal = null; },          // the owner moves the picture: no more keeping a field in view
       pan: (dx, dy) => { if (D.view) { C.panBy(D.view, dx, dy); paintView(); } },
       pinch: (f, cx, cy, dx, dy) => {
         if (!D.view) return;
+        D.kb.reveal = null;
         C.zoomAt(D.view, f, cx, cy);
         C.panBy(D.view, dx, dy);
         D.hintUntil = 0; renderHint();
@@ -595,11 +720,12 @@
       if (e.pointerType === 'mouse' && e.button !== 0) return;
       try { el.setPointerCapture(e.pointerId); } catch (x) { /* synthetic */ }
       D.gestures.down(e.pointerId, ...pt(e));
+      showTargets(true);
       e.preventDefault();
     });
     el.addEventListener('pointermove', e => D.gestures.move(e.pointerId, ...pt(e)));
-    el.addEventListener('pointerup', e => D.gestures.up(e.pointerId, ...pt(e)));
-    el.addEventListener('pointercancel', () => D.gestures.cancel());
+    el.addEventListener('pointerup', e => { D.gestures.up(e.pointerId, ...pt(e)); if (!D.gestures.fingers) fadeTargets(); });
+    el.addEventListener('pointercancel', () => { D.gestures.cancel(); fadeTargets(); });
     // desktop browsers (dev): the wheel / a trackpad pinch zooms about the pointer
     el.addEventListener('wheel', e => {
       if (!D.view) return;
@@ -615,16 +741,145 @@
   }
 
   // ---------------------------------------------------------------- typing: the hidden field -> type messages
-  const kbd = () => $('d-kbd');
-  function kbdOpen() { return document.activeElement === kbd(); }
+  // Two hidden fields: a textarea (autocorrect + dictation, keyboard type and Return key from the PC field) and, for a
+  // PC password field, a password input (no autocorrect, suggestions or dictation; nothing kept after it closes).
+  const kbdFields = () => [$('d-kbd'), $('d-kbd-secret')];
+  const kbd = () => D.kb.secret ? $('d-kbd-secret') : $('d-kbd');
+  function kbdOpen() { return kbdFields().includes(document.activeElement); }
   function kbdReset() { kbd().value = SENTINEL; D.typing.sent = ''; D.typing.composing = false; try { kbd().setSelectionRange(1, 1); } catch (e) { /* not focused */ } }
-  function kbdToggle() {
-    if (kbdOpen()) return kbdClose();
-    if (!D.link || !D.link.has('type')) return note('The PC doesn\'t take typing yet', 2000);
-    kbdReset();
-    kbd().focus();                                   // in a tap handler, so iOS brings up the keyboard
+  /** what the keyboard state machine needs to know: the monitor shown, and whether typing can reach the PC now */
+  function kctx() {
+    const live = !!(D.link && D.link.state === 'live' && D.link.has('type'));
+    return { active: D.active, canType: live && D.input.enabled && !D.switching && now() >= D.guardUntil };
   }
-  function kbdClose() { if (kbdOpen()) kbd().blur(); }
+  function kbdToggle() {
+    if (D.kb.needTap && kbdOpen()) return kbdFocusNow();             // focused, but iOS kept the keyboard down: this tap brings it
+    if (kbdOpen() || D.kb.sm.state.open) return kbdClose();
+    if (!D.link || !D.link.has('type')) return note('The PC doesn\'t take typing yet', 2000);
+    kbApply(D.kb.sm.userOpen(kctx()), true);                           // in a tap handler, so iOS brings up the keyboard
+  }
+  /** the owner puts the keyboard away (the button, a sheet opening): it stays down for this PC field */
+  function kbdClose() { kbApply(D.kb.sm.userClose()); }
+
+  /** Does what the keyboard state machine decided. gesture: we're inside the owner's tap (iOS shows the keyboard for
+      a focus there by itself); otherwise the shell is asked to let the next focus bring it up (keyboard.allow). */
+  function kbApply(r, gesture) {
+    if (!r) return;
+    D.kb.by = r.open ? r.by : null;
+    D.kb.field = r.field;
+    if (r.change === 'open' || r.change === 'refocus') kbdShow(r.field, !!gesture, r.by === 'auto');
+    else if (r.change === 'close') kbdHide();
+    else if (r.change === 'reset') { kbdReset(); if (!D.gestures || !D.gestures.fingers) revealField(); }   // not while the owner moves the picture
+    renderTop(); renderHint(); renderMini(); renderFocusBox(); renderAt();
+  }
+
+  function setKbdAttrs(a) {
+    const el = $('d-kbd');
+    el.setAttribute('inputmode', a.inputmode);
+    el.setAttribute('enterkeyhint', a.enterkeyhint);
+    el.setAttribute('autocorrect', a.autocorrect);
+    el.setAttribute('autocapitalize', a.autocapitalize);
+    el.setAttribute('spellcheck', a.spellcheck);
+    const sec = $('d-kbd-secret');                                     // a PIN gets digits, a one-line field "go"
+    sec.setAttribute('inputmode', a.inputmode === 'decimal' ? 'numeric' : 'text');
+    sec.setAttribute('enterkeyhint', a.enterkeyhint === 'enter' ? 'enter' : 'go');
+  }
+
+  async function kbdShow(field, gesture, auto) {
+    const tok = ++D.kb.token;
+    const a = C.keyboardAttrs(field);
+    D.kb.quiet = true;                                                  // our own blur isn't the owner putting it away
+    if (kbdOpen()) document.activeElement.blur();
+    D.kb.quiet = false;
+    $('d-kbd-secret').value = '';
+    D.kb.secret = a.secret;
+    setKbdAttrs(a);
+    kbdReset();
+    D.kb.needTap = false;
+    clearTimeout(D.kb.checkTimer);
+    let allowed = gesture || !(root.GupNative && root.GupNative.available);   // a desktop browser focuses fine
+    if (!gesture && root.GupNative && root.GupNative.available) {
+      try { const ok = await root.GupNative.call('keyboard.allow'); allowed = !!(ok && ok.allowed); } catch (e) { allowed = false; }
+      if (tok !== D.kb.token || !D.kb.sm.state.open || D.phase !== 'viewer') return;   // closed or changed meanwhile
+    }
+    D.kb.quiet = true;
+    kbd().focus({ preventScroll: true });
+    D.kb.quiet = false;
+    kbdReset();
+    if (auto) { D.kb.atUntil = now() + AT_MS; clearTimeout(D.kb.atTimer); D.kb.atTimer = setTimeout(renderAt, AT_MS + 20); }
+    if (!gesture && root.GupNative && root.GupNative.available) {
+      // WKWebView may still keep the keyboard down for a focus without a tap: then a "tap to type" chip does it
+      if (!allowed) D.kb.needTap = true;
+      else D.kb.checkTimer = setTimeout(() => {
+        if (tok === D.kb.token && kbdOpen() && !document.body.classList.contains('kb')) { D.kb.needTap = true; renderAt(); }
+      }, KB_CHECK_MS);
+    }
+    revealField(true);
+    renderTop(); renderHint(); renderMini(); renderFocusBox(); renderAt();
+  }
+  /** a tap on "tap to type" (or the keyboard button): focus again inside the tap */
+  function kbdFocusNow() {
+    D.kb.needTap = false;
+    D.kb.quiet = true;
+    kbd().blur();
+    kbd().focus({ preventScroll: true });
+    D.kb.quiet = false;
+    revealField(true);
+    renderAt();
+  }
+  function kbdHide() {
+    D.kb.token++;
+    clearTimeout(D.kb.checkTimer); clearTimeout(D.kb.revealTimer);
+    D.kb.needTap = false; D.kb.reveal = null; D.kb.atUntil = 0;
+    D.kb.quiet = true;
+    if (kbdOpen()) document.activeElement.blur();
+    D.kb.quiet = false;
+    $('d-kbd-secret').value = '';                                       // nothing of a password stays in the page
+    D.kb.secret = false;
+    kbdReset();
+    renderTop(); renderHint(); renderMini(); renderFocusBox(); renderAt();
+  }
+
+  /** keep the PC's focused field in view above the keyboard: now (glide), and again while the keyboard comes up */
+  function revealField(glide) {
+    const f = D.kb.field;
+    clearTimeout(D.kb.revealTimer);
+    if (!f || !f.rect || !D.view) { D.kb.reveal = null; return; }
+    D.kb.reveal = { rect: f.rect, multiline: f.multiline, until: now() + 1200 };
+    const go = () => {
+      const r = D.kb.reveal;
+      if (!r || !D.view || !kbdOpen()) return;
+      const before = D.view;
+      D.view = C.revealRect(D.view, r.rect, { multiline: r.multiline });
+      if (D.view.z === before.z && D.view.tx === before.tx && D.view.ty === before.ty) return;
+      if (glide) { const v = $('d-video'); v.classList.add('glide'); setTimeout(() => v.classList.remove('glide'), 300); }
+      paintView();
+    };
+    go();
+    D.kb.revealTimer = setTimeout(go, 400);            // the keyboard's height is known by then (or never comes)
+  }
+
+  /** mockup 9: the PC's focused field outlined while the keyboard types into it */
+  function renderFocusBox() {
+    const el = $('d-focus');
+    const f = D.kb.field, v = D.view;
+    const show = !!(f && f.rect && v && kbdOpen() && D.phase === 'viewer');
+    el.classList.toggle('hidden', !show);
+    if (!show) return;
+    const a = C.toArea(v, f.rect[0], f.rect[1]), b = C.toArea(v, f.rect[0] + f.rect[2], f.rect[1] + f.rect[3]);
+    Object.assign(el.style, { left: a.x + 'px', top: a.y + 'px', width: (b.x - a.x) + 'px', height: (b.y - a.y) + 'px' });
+  }
+
+  /** the chip over the keyboard: "keyboard opened for you" for a while, or "tap to type" when iOS kept it down */
+  function renderAt() {
+    const el = $('d-at');
+    let html = null;
+    if (D.kb.sm.state.open && D.kb.needTap) html = `${ic('keyboard', 13, 2.2)} text field focused · tap to type`;
+    else if (kbdOpen() && D.kb.by === 'auto' && now() < D.kb.atUntil) html = `${ic('keyboard', 13, 2.2)} text field focused · keyboard opened for you`;
+    el.classList.toggle('hidden', !html || D.phase !== 'viewer');
+    el.classList.toggle('act', !!(html && D.kb.needTap));
+    if (html) el.innerHTML = html;
+  }
 
   function sendTyping(del, text) {
     if (!D.link) return;
@@ -664,21 +919,29 @@
   }
 
   function wireKeyboard() {
-    const el = kbd();
-    el.value = SENTINEL;
-    el.addEventListener('beforeinput', e => {
-      // Backspace with nothing of ours left: one Backspace on the PC, the field stays as it is
-      if (e.inputType === 'deleteContentBackward' && !D.typing.composing && el.selectionStart <= 1 && el.selectionEnd <= 1) {
-        e.preventDefault();
-        sendTyping(1, '');
-      }
-    });
-    el.addEventListener('compositionstart', () => { D.typing.composing = true; });
-    el.addEventListener('compositionend', () => { D.typing.composing = false; kbdSync(); });
-    el.addEventListener('input', e => { if (!e.isComposing) kbdSync(); });
-    el.addEventListener('focus', () => { renderTop(); renderHint(); renderMini(); });
-    // a composition cut off by the keyboard closing never sends compositionend: don't wait for it forever
-    el.addEventListener('blur', () => { if (D.typing.composing) { D.typing.composing = false; kbdSync(); } renderTop(); renderMini(); });
+    for (const el of kbdFields()) {
+      el.value = SENTINEL;
+      el.addEventListener('beforeinput', e => {
+        // Backspace with nothing of ours left: one Backspace on the PC, the field stays as it is
+        if (e.inputType === 'deleteContentBackward' && !D.typing.composing && el.selectionStart <= 1 && el.selectionEnd <= 1) {
+          e.preventDefault();
+          sendTyping(1, '');
+        }
+      });
+      el.addEventListener('compositionstart', () => { D.typing.composing = true; });
+      el.addEventListener('compositionend', () => { D.typing.composing = false; kbdSync(); });
+      el.addEventListener('input', e => { if (!e.isComposing) kbdSync(); });
+      el.addEventListener('focus', () => { renderTop(); renderHint(); renderMini(); renderFocusBox(); });
+      el.addEventListener('blur', () => {
+        // a composition cut off by the keyboard closing never sends compositionend: don't wait for it forever
+        if (D.typing.composing) { D.typing.composing = false; kbdSync(); }
+        // the keyboard went away without us (Done, swiped down): the owner put it away
+        if (!D.kb.quiet && D.kb.sm.state.open) kbApply(D.kb.sm.userClose());
+        renderTop(); renderMini(); renderFocusBox();
+      });
+    }
+    $('d-at').addEventListener('pointerdown', e => e.preventDefault());
+    $('d-at').addEventListener('click', () => { if (D.kb.needTap) kbdFocusNow(); });
   }
 
   // ---------------------------------------------------------------- switch monitor
@@ -733,7 +996,7 @@
     $('d-mon').innerHTML = ic('monitor', 18, 2);
     $('d-kbd-btn').innerHTML = ic('keyboard', 20, 2);
     $('d-hint').innerHTML = `<div><span class="acc">${ic('expand', 15, 2.2)}</span><span><b>pinch</b> zoom · <b>drag</b> pan</span></div>` +
-      `<div><span class="acc">${ic('search', 15, 2.2)}</span><span><b>tap</b> clicks · <b>hold</b> drags</span></div>`;
+      `<div><span class="acc">${ic('search', 15, 2.2)}</span><span id="d-hint-tap"><b>tap</b> clicks · <b>hold</b> drags</span></div>`;
     $('d-back').addEventListener('click', disconnect);
     $('d-mon').addEventListener('click', openMonitorSheet);
     $('d-titlebox').addEventListener('click', openMonitorSheet);
