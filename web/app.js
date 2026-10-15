@@ -8,7 +8,7 @@
    scripts/mock-phone-api.js. */
 (function (root) {
   'use strict';
-  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair, Lock = root.GupLock;
+  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair, Lock = root.GupLock, Claude = root.GupClaude;
   const { ic, bot, ring, esc, fmtText, when, clock, ago, cap, toast, sheet } = root.GupUI;
   const $ = id => document.getElementById(id);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -20,7 +20,7 @@
     conn: 'connecting',          // connecting | online | offline | unpaired | unauthorized
     status: null, statusAt: 0,
     // chat
-    msgs: new Map(), cursor: null, busy: false, moreBefore: false, loadingOlder: false, pending: [], openTools: new Set(),
+    msgs: new Map(), cursor: null, busy: false, moreBefore: false, loadingOlder: false, pending: [], openTools: new Set(), behindOpen: false, stopping: false,
     // waiting
     items: null, version: null, filter: 'all', acting: new Set(), open: new Set(),
     runCtl: null,
@@ -99,10 +99,19 @@
     const fromBottom = m.scrollHeight - m.scrollTop;
     const list = [...S.msgs.values()].sort((a, b) => a.id - b.id);
     const out = [];
+    // the PC marks each row for the owner or behind the scenes (GupWorks's own talk with Gup, and Gup's replies to it);
+    // a PC that doesn't say shows everything, as before
+    const filtering = list.some(x => x.audience);
+    const dim = x => filtering && x.audience === 'behind';
+    const nBehind = list.filter(x => dim(x) && x.kind !== 'tool').length;
+    renderBehindToggle(nBehind);
     if (S.moreBefore) out.push(`<div class="older">${S.loadingOlder ? 'loading older…' : '↑ older messages'}</div>`);
     let tools = [];
     const flushTools = () => { if (tools.length) { out.push(toolLine(tools, Number(tools[0].id), true)); tools = []; } };
     for (const msg of list) {
+      const bh = dim(msg);
+      if (bh && !S.behindOpen) continue;
+      const bc = bh ? ' bhd' : '';
       if (msg.kind === 'tool') { tools.push(msg); continue; }
       if (msg.role === 'owner') {
         flushTools();
@@ -113,14 +122,14 @@
       }
       if (msg.kind === 'status' || msg.kind === 'error' || msg.role === 'system') {
         flushTools();
-        out.push(`<div class="sys${msg.kind === 'error' ? ' err' : ''}" data-id="${Number(msg.id)}">${fmtText(msg.body)}</div>`);
+        out.push(`<div class="sys${msg.kind === 'error' ? ' err' : ''}${bc}" data-id="${Number(msg.id)}">${fmtText(msg.body)}</div>`);
         continue;
       }
       // gup or another agent: a card with a `name ›` header; tool rows just before it fold into its steps line
       const name = msg.role === 'gup' ? 'gup' : (msg.sender || msg.role);
       const steps = tools.length ? toolLine(tools, Number(tools[0].id), false) : '';
       tools = [];
-      out.push(`<div class="gp g selectable" data-id="${Number(msg.id)}"><div class="hd">${bot(name, 26, { radius: 8 })}${esc(name.toLowerCase())} › ` +
+      out.push(`<div class="gp g selectable${bc}" data-id="${Number(msg.id)}"><div class="hd">${bot(name, 26, { radius: 8 })}${esc(name.toLowerCase())} › ` +
                `<span class="t">${esc(clock(msg.ts, true))}</span></div>${steps}<div class="tx">${fmtText(msg.body)}` +
                `${msg.partial ? '<i class="cur blink"></i>' : ''}</div>${atts(msg)}</div>`);
     }
@@ -129,15 +138,24 @@
       const label = p.state === 'failed' ? `not sent · ${p.why || 'tap to try again'}` : 'sending…';
       out.push(`<div class="me ${p.state}" data-pending="${esc(p.client_id)}"><div class="t">you · ${esc(label)}</div>${fmtText(p.text)}</div>`);
     }
-    if (S.busy) {
+    // Gup working on a behind-the-scenes turn isn't news for the owner: no "working" line unless they asked for the rows
+    const turn = [...list].reverse().find(x => x.role !== 'gup' && x.kind !== 'tool');
+    if (S.busy && !(turn && dim(turn) && !S.behindOpen)) {
       const last = tools.length ? tools[tools.length - 1].body : '';
       out.push(`<div class="typing" id="typing"><span id="spin">⠋</span> gup is working${last ? ': ' + esc(last) : ''}</div>`);
     }
-    if (!list.length && !S.pending.length) out.push(emptyChat());
+    if (!list.some(x => !dim(x)) && !S.pending.length) out.push(emptyChat());
     box.innerHTML = out.join('');
     if (stick || S.forceBottom) { m.scrollTop = m.scrollHeight; S.forceBottom = false; }
     else m.scrollTop = m.scrollHeight - fromBottom;
     S.stuck = nearBottom();
+  }
+  function renderBehindToggle(n) {
+    const b = $('bts');
+    b.hidden = !n;
+    $('v-gup').classList.toggle('has-bts', n > 0);
+    b.textContent = `${S.behindOpen ? '⌄' : '›'} Behind the scenes (${n})`;
+    b.setAttribute('aria-expanded', String(S.behindOpen));
   }
   function emptyChat() {
     if (S.conn === 'unpaired') return `<div class="empty">This phone isn't paired with your PC yet.<br>${pairButton('pair with your PC')}</div>`;
@@ -172,12 +190,23 @@
     }
   }
 
+  /** A first page that is mostly behind-the-scenes rows would show an empty chat: fetch older pages (a few) until
+      there is something for the owner to read. */
+  async function fillVisible() {
+    for (let i = 0; i < 4 && S.moreBefore && !S.loadingOlder; i++) {
+      const shown = [...S.msgs.values()].filter(m => m.audience !== 'behind' && m.kind !== 'tool').length;
+      if (shown >= 12 || ![...S.msgs.values()].some(m => m.audience)) return;
+      await loadOlder();
+    }
+  }
+
   async function chatLoop(signal) {
     let backoff = 1000;
     while (!signal.aborted) {
       try {
         const t0 = Date.now();
         let r;
+        const first = !S.cursor;
         if (!S.cursor) {
           r = await API.messages(50, { signal });
           S.msgs.clear();
@@ -193,6 +222,8 @@
         S.busy = !!r.busy;
         setConn('online');
         renderChat();
+        syncComposer();
+        if (first) fillVisible();
         backoff = 1000;
         // the PC answers at once instead of waiting when too many long-polls are open: don't spin
         if (quiet && Date.now() - t0 < 1000) await sleep(2000);
@@ -247,16 +278,38 @@
     renderChat();
   }
 
-  // ---- composer: grows with the text; the mic turns into send when there is text
+  // ---- composer: grows with the text; the mic turns into send when there is text, and into a red stop square while Gup
+  // is writing a reply and the box is empty (typing then queues the message, as in a terminal)
   function syncComposer() {
     const input = $('input');
     const has = input.value.trim().length > 0;
+    if (!S.busy) S.stopping = false;
+    const stop = S.busy && !has;
+    const mic = $('mic');
     $('field').classList.toggle('typing-on', input.value.length > 0);
-    $('mic').innerHTML = has ? ic('arrowup', 30, 2.4) : ic('mic', 30, 2.2);
-    $('mic').setAttribute('aria-label', has ? 'Send' : 'Talk to Gup');
+    mic.innerHTML = stop ? ic('stop', 30, 2.2) : has ? ic('arrowup', 30, 2.4) : ic('mic', 30, 2.2);
+    mic.setAttribute('aria-label', stop ? 'Stop Gup' : has ? 'Send' : 'Talk to Gup');
+    mic.classList.toggle('stop', stop);
+    mic.disabled = stop && S.stopping;
     input.style.height = '50px';
     input.style.height = Math.min(input.scrollHeight, 132) + 'px';
     document.documentElement.style.setProperty('--comp-h', Math.max(64, $('comp').offsetHeight) + 'px');
+  }
+
+  /** The stop button: cut off Gup's running reply. The words so far stay; the PC adds the "Stopped." row and busy goes false. */
+  async function stopGup() {
+    if (!S.busy || S.stopping) return;
+    S.stopping = true;
+    syncComposer();
+    try {
+      const r = await API.interrupt();
+      if (r && r.gup && r.gup.busy === false) S.busy = false;        // "idle": nothing was running (a late tap)
+    } catch (e) {
+      toast(e.offline ? 'PC not reachable · couldn\'t stop Gup' : e.status === 404 ? 'This PC can\'t stop Gup yet. Update GupWorks on the PC.'
+        : `Couldn't stop Gup${e.message ? ' · ' + esc(e.message) : ''}`, 'bad');
+      S.stopping = false;
+    }
+    syncComposer();
   }
 
   // ================================================================= Waiting on you
@@ -620,6 +673,7 @@
 
   function onPaired(e) {
     root.GupDesk.reset();
+    Claude.reset();
     S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null;
     usePaired(e);
     start();
@@ -655,8 +709,9 @@
     try { await N.call('pair.forget'); } catch (e) { return toast('Couldn\'t unpair: ' + esc(e.message || 'the app refused'), 'bad'); }
     API.reset();
     root.GupDesk.reset();
+    Claude.reset();
     S.phone = null;
-    S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null; S.busy = false;
+    S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null; S.busy = false; S.stopping = false;
     S.conn = 'connecting';
     start();
     toast('Unpaired: the key is gone from this phone.');
@@ -687,6 +742,7 @@
     chatLoop(ctl.signal);
     waitingLoop(ctl.signal);
     statusLoop(ctl.signal);
+    Claude.run(ctl.signal);
     if (S.tab === 'desktop') root.GupDesk.show();
   }
 
@@ -710,7 +766,7 @@
   // the shell locked (the app went to the background) or Face ID / the passcode passed
   N.on('lock', e => {
     if (e.locked) {
-      if (!Lock.isLocked) { stop(); if (Pair.isOpen) Pair.close(); root.GupDesk.lock(); }
+      if (!Lock.isLocked) { stop(); if (Pair.isOpen) Pair.close(); root.GupDesk.lock(); Claude.closeSheet(); }
       Lock.show(e);
     } else if (Lock.isLocked) {
       Lock.hide();                                      // at once: the shell says "unlocked" twice (unlock + sync)
@@ -741,6 +797,7 @@
     $('tab-projects-icon').outerHTML = ic('folder', 25, 1.9);
     $('tab-status-icon').outerHTML = ic('pulse', 25, 1.9);
     root.GupDesk.wire();
+    Claude.wire();
     syncComposer();
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
@@ -752,6 +809,7 @@
     });
     $('mic').addEventListener('click', async () => {
       if (input.value.trim()) return sendFromInput();
+      if (S.busy) return stopGup();
       // talking: the words fill the box as they come; sent (as text) only when the owner taps send
       const before = input.value;
       input.blur();                                       // the sheet, not the keyboard
@@ -789,6 +847,7 @@
       }
       if (e.target.closest('.older')) loadOlder();
     });
+    $('bts').addEventListener('click', () => { S.behindOpen = !S.behindOpen; S.forceBottom = true; renderChat(); });
     $('w-filters').addEventListener('click', e => {
       const c = e.target.closest('[data-filter]');
       if (c) { S.filter = c.dataset.filter; renderWaiting(); }
@@ -855,7 +914,7 @@
       if (params.get('rtc') === 'loop') root.GupMockDesk.installLoopbackRTC();   // no network for ICE (sandboxes)
       const desk = root.GupMockDesk.create({ state: params.get('desk') || 'ok' });
       root.GupDevDesk = desk;
-      const m = root.GupMock.createMock({ speed: Number(params.get('speed')) || 1, desktop: desk });
+      const m = root.GupMock.createMock({ speed: Number(params.get('speed')) || 1, desktop: desk, audience: params.get('audience') !== 'off', claude: params.get('claude') || 'ok' });
       API.useTransport(root.GupMock.inPageTransport(m), 'mock');
       root.GupDevMock = m;
     } else if (N.available) {

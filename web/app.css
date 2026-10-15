@@ -2,23 +2,32 @@
    Geometry follows the look D mockups at 393 x 852 pt: tab bar 26 pt above the edge, composer 14 pt above the tab bar,
    chat header under the status bar. */
 
+/* the Claude sign-in banner (claude.js) pushes every screen down by its height while it shows */
+:root { --bn: 0px; }
+html.claude-out { --bn: 54px; }
+
 #app { position: fixed; inset: 0; background: var(--bg); overflow: hidden; }
 .view { position: absolute; inset: 0; display: none; }
 .view.on { display: block; }
 .scroller { overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain;
-  padding-top: var(--sat); padding-bottom: calc(var(--tab-bottom) + var(--tab-h) + 24px);
+  padding-top: calc(var(--sat) + var(--bn)); padding-bottom: calc(var(--tab-bottom) + var(--tab-h) + 24px);
   -webkit-mask-image: linear-gradient(to bottom, transparent calc(var(--sat) - 12px), #000 calc(var(--sat) + 10px));
           mask-image: linear-gradient(to bottom, transparent calc(var(--sat) - 12px), #000 calc(var(--sat) + 10px)); }
 .scroller::-webkit-scrollbar, .msgs::-webkit-scrollbar, .filters::-webkit-scrollbar { display: none; }
 
 /* ---------------------------------------------------------------- Gup chat */
-.chead { position: absolute; left: 0; right: 0; top: calc(var(--sat) + 2px); display: flex; flex-direction: column; align-items: center; gap: 6px;
+.chead { position: absolute; left: 0; right: 0; top: calc(var(--sat) + var(--bn) + 2px); display: flex; flex-direction: column; align-items: center; gap: 6px;
   padding: 0 0 10px; z-index: 5; }
 .chead .nm { font-size: 16px; font-weight: 800; display: flex; align-items: center; gap: 6px; }
 .chead .st { font-size: 12px; color: var(--green); max-width: calc(100% - 32px); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .chead .st.amber { color: var(--amber); } .chead .st.red { color: var(--red); }
 
-.msgs { position: absolute; left: 0; right: 0; top: calc(var(--sat) + 108px);
+.chead .bts { font-size: 11.5px; color: var(--dim); padding: 2px 10px; border-radius: 10px; background: rgba(255,255,255,.06); }
+.chead .bts[hidden] { display: none; }
+.bhd { opacity: .6; }
+#v-gup.has-bts .msgs { top: calc(var(--sat) + var(--bn) + 136px); }   /* the toggle takes a line under the status */
+
+.msgs { position: absolute; left: 0; right: 0; top: calc(var(--sat) + var(--bn) + 108px);
   bottom: calc(var(--tab-bottom) + var(--tab-h) + 30px + var(--comp-h, 64px));
   overflow-y: auto; -webkit-overflow-scrolling: touch; overscroll-behavior: contain; padding: 0 14px;
   -webkit-mask-image: linear-gradient(to bottom, transparent 0, #000 56px); mask-image: linear-gradient(to bottom, transparent 0, #000 56px); }
@@ -66,6 +75,9 @@
 .comp .mic { width: 64px; height: 64px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; color: var(--ink); background: #fff;
   box-shadow: 0 10px 30px rgba(124,140,255,.55), 0 0 0 6px rgba(255,255,255,.08); transition: transform .12s; }
 .comp .mic:active { transform: scale(.94); }
+.comp .mic.stop { color: #fff; background: #ff453a; box-shadow: 0 10px 30px rgba(255,69,58,.5), 0 0 0 6px rgba(255,255,255,.08); }
+.comp .mic.stop svg rect { fill: currentColor; }
+.comp .mic.stop:disabled { opacity: .55; }
 /* the voice sheet stands in for the composer while it is open (the white mic would glow through the glass) */
 html.voice .comp { visibility: hidden; }
 
@@ -372,3 +384,26 @@ html.desk-on .tabbar { display: none; }
 .monsheet .mrow.on { box-shadow: inset 0 0 0 2px var(--acc), 0 0 22px rgba(124,140,255,.3); }
 .monsheet .mrow b { font-size: 15px; } .monsheet .mrow small { display: block; font-size: 11.5px; color: var(--dim); margin-top: 3px; }
 .monsheet .btn { width: 100%; }
+
+/* ---------------------------------------------------------------- Claude signed out (claude.js) */
+.cbn { position: absolute; left: 12px; right: 12px; top: calc(var(--sat) + 2px); height: 46px; z-index: 7; border-radius: 23px; padding: 0 16px;
+  display: flex; align-items: center; gap: 11px; text-align: left; background: rgba(255,100,116,.14); color: #ff9aa4;
+  box-shadow: inset 0 0 0 1px rgba(255,100,116,.4), inset 0 1px 0 rgba(255,255,255,.14); }
+.cbn[hidden] { display: none; }
+.cbn.busy { background: rgba(255,179,71,.12); color: #ffc46e; box-shadow: inset 0 0 0 1px rgba(255,179,71,.35), inset 0 1px 0 rgba(255,255,255,.12); }
+.cbn .cbi { flex: none; display: flex; }
+.cbn .cbt { flex: 1; min-width: 0; display: flex; flex-direction: column; line-height: 1.25; overflow: hidden; }
+.cbn .cbt b { font-size: 13.5px; font-weight: 800; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.cbn .cbt i { font-style: normal; font-size: 11.5px; color: var(--mut); }
+.cbn:active { transform: scale(.985); }
+.claude .vtext.cl-msg { font-size: 15px; font-weight: 500; line-height: 1.6; letter-spacing: 0; color: var(--mut); }
+.claude .vtext.cl-msg b { color: #fff; }
+.claude .btn, .claude .cl-code { align-self: stretch; }
+.claude .btn[hidden], .claude .cl-code[hidden], .claude .cl-spin[hidden] { display: none; }
+.claude a.btn { text-decoration: none; color: var(--ink); }
+.claude .cl-code { display: flex; flex-direction: column; gap: 12px; }
+.claude .cl-input { width: 100%; height: 54px; padding: 0 18px; border-radius: 27px; background: rgba(0,0,0,.25); font-size: 15px;
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.12); caret-color: var(--acc2); }
+.claude .cl-input::placeholder { color: var(--dim); }
+.claude .cl-input:focus { box-shadow: inset 0 0 0 1.5px var(--acc); }
+.claude .cl-spin { font-size: 13px; color: var(--amber); }

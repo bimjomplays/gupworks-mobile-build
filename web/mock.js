@@ -8,7 +8,7 @@
    What it implements: bearer auth (401 after a short delay), JSON body rules (411/413/415/400), Gup's thread with
    newest/older pages and the cursor long-poll (upserts: queued -> picked up, partial -> final, tool rows -> done),
    send with client_id dedupe, the waiting list with its version long-poll, /v1/waiting/act with the confirm block
-   (428 / 409 stale / 403 pc_only), /v1/status and /v1/auth/rotate, and /v1/desktop/... answered by a fake remote
+   (428 / 409 stale / 403 pc_only), /v1/status and /v1/auth/rotate, /v1/claude-login... (the Claude sign-in, Core #485's shape), and /v1/desktop/... answered by a fake remote
    desktop host when one is passed in (createMock({desktop}), web/mock-desktop.js; the HTTP mock has none). Gup "answers" with canned replies. */
 (function (root) {
   'use strict';
@@ -17,6 +17,9 @@
   const BODY_MAX = 16 * 1024, TEXT_MAX = 8000, ANSWER_MAX = 4000, WAIT_MAX = 25, MAX_LONG_POLLS = 4;
   const CLIENT_ID = /^[A-Za-z0-9_.-]{1,64}$/;
   const METHODS = ['face_id', 'touch_id', 'passcode'];
+  const CLAUDE_STATES = ['ok', 'expired', 'awaiting-code', 'finishing'];
+  const CODE_MAX = 512;
+  const MOCK_SIGN_IN_URL = 'https://claude.ai/oauth/authorize?client=mock&state=mock';
 
   const iso = t => new Date(t).toISOString().replace(/\.\d{3}Z$/, '+00:00');
   const hex = n => Array.from({ length: n }, () => Math.floor(Math.random() * 16).toString(16)).join('');
@@ -33,20 +36,33 @@
 
     let seq = 0;                                   // change counter: every new or changed message, every busy flip
     let nextId = 400;
-    let busy = false, working = false, longPolls = 0;
+    let busy = false, working = false, longPolls = 0, stopping = false;   // stopping: the owner tapped stop on the running reply
     const msgs = [], queue = [], byClient = new Map(), waiters = new Set();
     let waiting = [], waitingRev = 1;
     const tokens = { current: opts.token || DEV_TOKEN, pending: null };
     const settings = { paused: false, newWork: { ok: true, why: 'ok' } };
+    // Claude's login on the PC (Core #485's shape, see claudeLogin() below). Only the state is kept, never a pasted code.
+    const claude = { state: CLAUDE_STATES.includes(opts.claude) ? opts.claude : 'ok', since: null, url: null, error: null, finishes: 0, version: 1 };
+    if (claude.state !== 'ok') { claude.since = Date.now() - 20 * 60e3; if (claude.state === 'awaiting-code') claude.url = MOCK_SIGN_IN_URL; }
     const t0 = Date.now();
     const desk = opts.desktop || null;            // a GupMockDesk (browser only: it needs WebRTC)
 
     // ---------------------------------------------------------------- thread
     function wake() { for (const w of Array.from(waiters)) w.check(); }
+    // the PC's "meant for the owner" rule (Core's audience.py): the owner's rows, Gup's replies to them and rows Gup flagged
+    // (forOwner) are the owner's; GupWorks and other agents, and Gup's replies to them, are behind the scenes
+    let ownerTurn = false;
+    function audienceOf(m) {
+      if (m.sender === 'user') return (ownerTurn = true), 'owner';
+      if (m.sender !== 'gup') return (ownerTurn = false), 'behind';
+      return m.forOwner || ownerTurn ? 'owner' : 'behind';
+    }
     function addMsg(m, at) {
       nextId += 1 + Math.floor(Math.random() * 3);   // ids are shared with other threads on the PC: gaps
       const full = Object.assign({ id: nextId, sender: 'gup', role: 'gup', kind: 'text', body: '', ts: iso(at || Date.now()),
         partial: false, queued: false, via: null, client_id: null, attachments: [], tool: null }, m);
+      full.audience = opts.audience === false ? undefined : audienceOf(full);   // opts.audience:false = a PC that doesn't say
+      delete full.forOwner;
       full._rev = ++seq;
       msgs.push(full);
       wake();
@@ -99,6 +115,10 @@
                text: `On it: "${text.length > 90 ? text.slice(0, 90) + '…' : text}". (This is the dev mock: nothing really happened on the PC.)` };
     }
 
+    class Stopped extends Error {}
+    // a tick that gives way at once when the owner stops the reply
+    async function step(ms) { await tick(ms); if (stopping) throw new Stopped(); }
+
     async function work() {
       if (working) return;
       working = true;
@@ -108,30 +128,49 @@
           const m = queue.shift();
           update(m, { queued: false });
           setBusy(true);
+          stopping = false;
           const r = replyFor(m.body);
-          for (const tool of r.tools) {
-            await tick(450);
-            const row = addMsg({ kind: 'tool', body: tool, tool: { name: tool.split(':')[0], error: false, done: false } });
-            await tick(550);
-            update(row, { tool: Object.assign({}, row.tool, { done: true }) });
+          let row = null, msg = null;
+          try {
+            for (const tool of r.tools) {
+              await step(450);
+              row = addMsg({ kind: 'tool', body: tool, tool: { name: tool.split(':')[0], error: false, done: false } });
+              await step(550);
+              update(row, { tool: Object.assign({}, row.tool, { done: true }) });
+              row = null;
+            }
+            const words = r.text.split(' ');
+            const parts = [Math.ceil(words.length * .25), Math.ceil(words.length * .55), Math.ceil(words.length * .8)];
+            for (const n of parts) {
+              await step(350);
+              const body = words.slice(0, n).join(' ');
+              if (!msg) msg = addMsg({ body, partial: true }); else update(msg, { body });
+            }
+            await step(350);
+            update(msg, { body: r.text, partial: false });
+            if (r.after) r.after();
+          } catch (e) {
+            if (!(e instanceof Stopped)) throw e;
+            // what Gup said so far stays; a tool step that was running is settled as stopped; then the status row
+            if (row) update(row, { tool: Object.assign({}, row.tool, { done: true, error: true }) });
+            if (msg) update(msg, { partial: false });
+            addMsg({ sender: 'gup', role: 'system', kind: 'status', forOwner: true, body: 'Stopped. Send a message when you want Gup to carry on.', meta: { interrupted: true } });
           }
-          const words = r.text.split(' ');
-          const parts = [Math.ceil(words.length * .25), Math.ceil(words.length * .55), Math.ceil(words.length * .8)];
-          let msg = null;
-          for (const n of parts) {
-            await tick(350);
-            const body = words.slice(0, n).join(' ');
-            if (!msg) msg = addMsg({ body, partial: true }); else update(msg, { body });
-          }
-          await tick(350);
-          update(msg, { body: r.text, partial: false });
-          if (r.after) r.after();
+          stopping = false;
           setBusy(queue.length > 0);
         }
       } finally {
         working = false;
+        stopping = false;
         setBusy(false);
       }
+    }
+
+    /** POST /v1/threads/gup/interrupt: `idle` when no reply is running (a late tap can't cut off the next turn) */
+    function interrupt() {
+      if (!busy || !working) return ok({ status: 'idle', gup: { busy } });
+      stopping = true;
+      return ok({ status: 'interrupting', gup: { busy: true } });
     }
 
     // ---------------------------------------------------------------- waiting list
@@ -172,6 +211,10 @@
         addMsg({ kind: 'tool', body: t, tool: { name: t.split(':')[0], error: false, done: true } }, now - 20 * min);
       addMsg({ body: 'Filed **#812** for Casper. He planned it and a builder is on it now.' }, now - 20 * min);
       addMsg({ sender: 'casper', role: 'agent', body: 'Builder picked up #812; first test run is green.' }, now - 9 * min);
+      // behind the scenes: a system alert, Gup's reply to it, then a message Gup flagged for the owner
+      addMsg({ sender: 'gupworks', role: 'system', kind: 'status', body: '[GupWorks: alert] #801 review passed, waiting to merge.' }, now - 8 * min);
+      addMsg({ body: 'Noted, nothing for you to do on #801.' }, now - 8 * min);
+      addMsg({ body: 'The services page is ready to publish and only you can decide.', forOwner: true }, now - 7 * min);
 
       // cards as the PC makes them (docs/phone-api.md "The card"); approval:14 and proposed:161 stay without one, like an
       // item from an older PC, so the plain card is exercised too
@@ -214,7 +257,43 @@
                  taken_at: iso(Date.now() - 90e3) },
         gup: { status: busy ? 'answering' : 'idle', busy, queued: msgs.filter(m => m.role === 'owner' && m.queued).length },
         waiting: waiting.length, device: { paired_at: iso(t0 - 86400e3) },
+        claude_login: { state: claude.state, since: claude.since ? iso(claude.since) : null, message: CLAUDE_MSG[claude.state] },
       });
+    }
+
+    // ---------------------------------------------------------------- Claude sign-in (Core #485's shape)
+    //   GET  /v1/claude-login        -> {state: ok | expired | awaiting-code | finishing, since, message, url, expires_at, error: null | {code, message}, paused, version}
+    //   POST /v1/claude-login/start  -> 200 same object (awaiting-code with url); 409 stale while finishing
+    //   POST /v1/claude-login/code   {code} -> 200 same object (finishing); 400 bad_request (empty, > 512, spaces inside); 409 stale
+    // A pasted code is a secret: the mock reads whether it looks right and drops it, nothing keeps it.
+    const CLAUDE_MSG = { ok: 'Claude is signed in.', expired: 'Claude is signed out. Gup and the team are paused until you sign in again.',
+      'awaiting-code': 'Waiting for the sign-in code.', finishing: 'Finishing the sign-in.' };
+    function claudeLogin() {
+      const waiting = claude.state === 'awaiting-code';
+      return ok({ state: claude.state, since: claude.since ? iso(claude.since) : null, message: CLAUDE_MSG[claude.state],
+                  url: waiting ? claude.url : null, expires_at: waiting ? iso(Date.now() + 10 * 60e3) : null,
+                  error: claude.error ? { code: claude.error, message: 'mock: ' + claude.error } : null,
+                  paused: claude.state !== 'ok', version: 'v' + claude.version });
+    }
+    function claudeStart() {
+      if (claude.state === 'finishing') return err(409, 'stale', 'A sign-in is finishing.');
+      if (claude.state !== 'awaiting-code') { claude.state = 'awaiting-code'; claude.since = claude.since || Date.now(); claude.url = MOCK_SIGN_IN_URL; claude.error = null; claude.version++; }
+      return claudeLogin();
+    }
+    function claudeCode(body) {
+      const code = body && body.code;
+      if (typeof code !== 'string' || !code || code.length > CODE_MAX || /\s/.test(code)) return err(400, 'bad_request', 'code is not valid');
+      if (claude.state !== 'awaiting-code') return err(409, 'stale', 'No sign-in is waiting for a code. Start one first.');
+      const good = !/^wrong/i.test(code);                        // dev: a code starting "wrong" is refused by the pretend login
+      claude.state = 'finishing'; claude.error = null; claude.version++;
+      const gen = ++claude.finishes;
+      tick(1800).then(() => {
+        if (gen !== claude.finishes) return;
+        claude.version++;
+        if (good) { claude.state = 'ok'; claude.since = null; claude.url = null; }
+        else { claude.state = 'expired'; claude.url = null; claude.error = 'bad_code'; }
+      });
+      return claudeLogin();
     }
 
     async function getMessages(q, signal) {
@@ -307,9 +386,13 @@
     const ROUTES = {
       '/v1/status': { GET: () => status() },
       '/v1/threads/gup/messages': { GET: (q, b, s) => getMessages(q, s), POST: (q, b) => postMessage(b) },
+      '/v1/threads/gup/interrupt': { POST: () => interrupt() },
       '/v1/waiting': { GET: (q, b, s) => getWaiting(q, s) },
       '/v1/waiting/act': { POST: (q, b) => act(b) },
       '/v1/auth/rotate': { POST: () => rotate() },
+      '/v1/claude-login': { GET: () => claudeLogin() },
+      '/v1/claude-login/start': { POST: () => claudeStart() },
+      '/v1/claude-login/code': { POST: (q, b) => claudeCode(b) },
       // remote desktop: answered by a fake host (mock-desktop.js) when there is one; the HTTP mock has none
       '/v1/desktop/status': { GET: () => desk ? desk.status() : ok({ available: false, versions: [1], session: null, reason: 'This mock has no desktop host (use index.html?mock in a browser).' }) },
       '/v1/desktop/sessions': { POST: (q, b) => desk ? desk.start(b) : err(503, 'host_unavailable', 'This mock has no desktop host.') },
@@ -352,7 +435,15 @@
       get token() { return tokens.current; },
       /** test and demo helpers */
       addWaiting, proposedItem,
-      set(o) { if ('paused' in o) settings.paused = o.paused; if ('newWork' in o) settings.newWork = o.newWork; },
+      set(o) {
+        if ('paused' in o) settings.paused = o.paused;
+        if ('newWork' in o) settings.newWork = o.newWork;
+        if (CLAUDE_STATES.includes(o.claude)) {            // the PC's Claude login changed (expired by itself, signed in on the PC)
+          claude.state = o.claude; claude.finishes++; claude.error = null; claude.version++;
+          claude.since = o.claude === 'ok' ? null : (claude.since || Date.now());
+          claude.url = o.claude === 'awaiting-code' ? MOCK_SIGN_IN_URL : null;
+        }
+      },
       get counts() { return { messages: msgs.length, waiting: waiting.length, longPolls }; },
     };
   }

@@ -22,6 +22,7 @@
       <span id="chead-bot"></span>
       <button class="nm" id="chead-name" type="button">gup <span id="chead-chev"></span></button>
       <div class="st" id="conn">● connecting…</div>
+      <button class="bts" id="bts" type="button" hidden aria-expanded="false"></button>
     </header>
     <div class="msgs" id="msgs" aria-live="polite"><div class="msgs-in" id="msgs-in"></div></div>
     <div class="comp" id="comp">
@@ -59,6 +60,9 @@
   <section class="view scroller" id="v-status" aria-label="Status">
     <div class="stat" id="s-body"></div>
   </section>
+
+  <!-- Claude signed out on the PC: one banner for every tab (claude.js) -->
+  <button class="cbn g" id="cbn" type="button" hidden aria-label="Claude is signed out"></button>
 
   <nav class="tabbar five" id="tabbar" aria-label="Tabs">
     <button class="tab" data-tab="gup" type="button"><span class="tbbot" id="tab-gup-icon"></span><span>Gup</span></button>
@@ -129,6 +133,7 @@
 <script src="native.js"></script>
 <script src="ui.js"></script>
 <script src="voice.js"></script>
+<script src="claude.js"></script>
 <script src="hooks.js"></script>
 <script src="pair.js"></script>
 <script src="lock.js"></script>

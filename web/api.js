@@ -167,6 +167,9 @@
       return request('POST', '/v1/threads/gup/messages', Object.assign({ body: { text, client_id: clientId } }, opts));
     },
 
+    /** The stop button: cut off the reply Gup is writing. {status: 'interrupting' | 'idle', gup: {busy}}; no Face ID. */
+    interrupt(opts) { return request('POST', '/v1/threads/gup/interrupt', Object.assign({ body: {} }, opts)); },
+
     // ---- waiting on the owner
     waiting(opts) { return request('GET', '/v1/waiting', opts); },
     pollWaiting(version, wait, opts) {
@@ -183,6 +186,14 @@
     /** New device token. Through the iOS shell the answer is {rotated, created_at}: the shell keeps the token in the
         Keychain and switches to it once the PC has seen it (docs/phone-api.md "Rotation from the app"). */
     rotate(opts) { return request('POST', '/v1/auth/rotate', Object.assign({ body: {} }, opts)); },
+
+    // ---- Claude sign-in on the PC (Core #485: docs/phone-api.md). State {state: ok | expired | awaiting-code | finishing, since,
+    // message, url (only while awaiting-code), expires_at, error: null | {code, message}, paused, version}. A 404 means an older PC.
+    claudeLogin(opts) { return request('GET', '/v1/claude-login', opts); },
+    /** Makes the link (waits up to ~20 s for it). Idempotent while a login is waiting; 409 stale while finishing; 503 busy. */
+    claudeLoginStart(opts) { return request('POST', '/v1/claude-login/start', Object.assign({ body: {}, timeoutMs: 30000 }, opts)); },
+    /** The pasted code goes straight into the request body and nowhere else: not kept, not logged, never in an error text. */
+    claudeLoginCode(code, opts) { return request('POST', '/v1/claude-login/code', Object.assign({ body: { code }, timeoutMs: 30000 }, opts)); },
 
     // ---- remote desktop (docs/remote-desktop-protocol.md "Signaling"; the PC's bridge forwards these to its host)
     /** {available, versions, session, reason}; always 200 (a host that isn't running reads as available: false) */
