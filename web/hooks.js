@@ -16,6 +16,12 @@
      reconnect may take the last check if it is under 2 minutes old (the protocol allows it), so a dropped link or the
      return from the app lock doesn't ask twice; reuseOnly never prompts (null when the last check is too old).
 
+   GupHooks.confirmSwitch({id, label}) / GupHooks.confirmType({id, title})
+     The only source of the confirm blocks the PC asks for on Restart PC (key switch:<id>, action run) and on typing a
+     secret into a PC window (key type:<id>, action type). Same Face ID rule as an owner decision: in the app the shell
+     runs Face ID and POST /v1/switches/restart-pc and POST /v1/type-requests/<id> leave the phone only with a block it
+     issued, once. null when the owner cancels or the check fails. Against the dev mock the glass sheet stands in.
+
    GupHooks.startVoice({onText}) -> Promise<{text, send} | null>
      The chat's mic: on-device speech-to-text in the voice sheet (voice.js). The words go into the chat box as they
      come (onText); it resolves the final text with send true (the owner tapped the send arrow) or false (keep it in
@@ -66,12 +72,45 @@
     return null;
   }
 
+  /** a Face ID check for exactly one key + action (restart, typing); null when it didn't pass */
+  async function confirmKeyed(req, wording) {
+    if (root.GupAPI.mode === 'mock') return devConfirm(req);
+    if (!root.GupNative.available) {
+      toast(esc(wording.app), 'bad');
+      return null;
+    }
+    let r = null;
+    try {
+      r = await root.GupNative.call('confirm', {
+        key: req.key, action: req.action, text: '', title: req.title,
+        clockOffsetMs: root.GupAPI.serverNow().getTime() - Date.now(),
+      });
+    } catch (e) { /* locked meanwhile */ }
+    const c = r && r.confirm;
+    if (c && c.key === req.key && c.action === req.action) return c;
+    const why = {
+      failed: wording.failed,
+      no_passcode: 'Set a passcode on this iPhone first: this needs Face ID or the passcode.',
+      busy: 'Another check is still open.',
+    }[r && r.error];
+    if (why) toast(esc(why), 'bad');
+    return null;
+  }
+
   const GupHooks = {
     async confirmOwnerAction(req) {
       if (root.GupAPI.mode === 'mock') return devConfirm(req);
       if (root.GupNative.available) return nativeConfirm(req);
       toast('Deciding needs Face ID in the GupWorks iPhone app. Decide this one on the PC.', 'bad');
       return null;
+    },
+    confirmSwitch(req) {
+      return confirmKeyed({ key: 'switch:' + req.id, action: 'run', label: req.label, title: req.label },
+        { app: 'This needs Face ID in the GupWorks iPhone app.', failed: 'Face ID didn\'t pass, so the PC was not restarted.' });
+    },
+    confirmType(req) {
+      return confirmKeyed({ key: 'type:' + req.id, action: 'type', label: 'type on the PC', title: req.title || 'type on the PC' },
+        { app: 'Typing on the PC needs Face ID in the GupWorks iPhone app.', failed: 'Face ID didn\'t pass, so nothing was typed.' });
     },
     startVoice(opts) {
       return root.GupVoice.open(opts);

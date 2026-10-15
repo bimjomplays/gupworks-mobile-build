@@ -412,6 +412,53 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
         return try? JSONSerialization.data(withJSONObject: out)
     }
 
+    /// The checked block in a body's `confirm`, when it is exactly one this bridge handed out for this key and action
+    /// (used up). Quick switches that run something and typing a secret on the PC go through here.
+    private func takeIssuedBlock(_ json: [String: Any], key: String, action: String) -> [String: Any]? {
+        guard let c = json["confirm"] as? [String: Any], c.count == 4,
+              c["key"] as? String == key, c["action"] as? String == action,
+              let method = c["method"] as? String, let at = c["at"] as? String else { return nil }
+        issued.removeAll { $0.expires < Date() }
+        guard let i = issued.firstIndex(where: {
+            $0.key == key && $0.action == action && $0.method == method && $0.at == at && $0.text.isEmpty
+        }) else { return nil }
+        issued.remove(at: i)
+        return ["key": key, "action": action, "method": method, "at": at]
+    }
+
+    /// POST /v1/switches/<id> {action: run}: a switch that runs something (Restart PC) leaves only with a block this
+    /// bridge issued for switch:<id> / run. The body is rebuilt from exactly that. on/off flips need no block.
+    private func takeSwitchRun(_ body: Data?, id: String) -> Data? {
+        guard let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              json["action"] as? String == "run",
+              let confirm = takeIssuedBlock(json, key: "switch:" + id, action: "run") else { return nil }
+        return try? JSONSerialization.data(withJSONObject: ["action": "run", "confirm": confirm])
+    }
+
+    /// POST /v1/type-requests/<id>: typing a secret into a PC window leaves only with a block this bridge issued for
+    /// type:<id> / type. The body is rebuilt from the values (never logged or kept here) and the optional enter.
+    private func takeTypeAnswer(_ body: Data?, id: String) -> Data? {
+        guard let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any],
+              let values = json["values"] as? [String], values.count >= 1, values.count <= 8,
+              values.allSatisfy({ $0.count <= 256 }),
+              let confirm = takeIssuedBlock(json, key: "type:" + id, action: "type") else { return nil }
+        var out: [String: Any] = ["values": values, "confirm": confirm]
+        if let enter = json["enter"] as? Bool { out["enter"] = enter }
+        return try? JSONSerialization.data(withJSONObject: out)
+    }
+
+    private static func runs(_ body: Data?) -> Bool {
+        guard let body, let json = try? JSONSerialization.jsonObject(with: body) as? [String: Any] else { return false }
+        return json["action"] as? String == "run"
+    }
+
+    /// a type request's id: 32 lowercase hex characters
+    private static func isRequestId(_ s: String) -> Bool {
+        s.count == 32 && s.unicodeScalars.allSatisfy(CharacterSet.ascii(upper: false, plus: "").contains)
+    }
+
+    private static let confirmNeeded = #"{"error":{"code":"confirmation_required","message":"Confirm with Face ID first."}}"#
+
     // MARK: - API requests
 
     private func request(_ a: [String: Any]) async -> [String: Any] {
@@ -438,7 +485,23 @@ final class NativeBridge: NSObject, WKScriptMessageHandlerWithReply {
             }
             body = checked
         }
-        let timeout = max(1, min(120, ((a["timeoutMs"] as? Double) ?? 15000) / 1000))
+        let parts = path.split(separator: "/").map(String.init)
+        if method == "POST", parts.count == 3, parts[1] == "switches", Self.runs(body) {
+            // a switch that runs something (Restart PC) is never sent without this phone's own Face ID check for it;
+            // an on/off flip is not a run and goes through as asked
+            guard let checked = takeSwitchRun(body, id: parts[2]) else { return ["status": 428, "body": Self.confirmNeeded] }
+            body = checked
+        }
+        if method == "POST", parts.count == 3, parts[1] == "type-requests" {
+            // typing a secret on the PC: only with a Face ID check for exactly this request, once
+            guard Self.isRequestId(parts[2]), let checked = takeTypeAnswer(body, id: parts[2]) else {
+                return ["status": 428, "body": Self.confirmNeeded]
+            }
+            body = checked
+        }
+        // a switch flip can take a couple of minutes on the PC (Away mode), so those wait longer than the usual 2 minutes
+        let longest: Double = method == "POST" && parts.count == 3 && parts[1] == "switches" ? 180 : 120
+        let timeout = max(1, min(longest, ((a["timeoutMs"] as? Double) ?? 15000) / 1000))
 
         let rotating = method == "POST" && path == "/v1/auth/rotate"
         let usedPending = p.pendingToken != nil

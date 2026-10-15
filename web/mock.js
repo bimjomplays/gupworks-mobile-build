@@ -44,6 +44,20 @@
     // Claude's login on the PC (Core #485's shape, see claudeLogin() below). Only the state is kept, never a pasted code.
     const claude = { state: CLAUDE_STATES.includes(opts.claude) ? opts.claude : 'ok', since: null, url: null, error: null, finishes: 0, version: 1 };
     if (claude.state !== 'ok') { claude.since = Date.now() - 20 * 60e3; if (claude.state === 'awaiting-code') claude.url = MOCK_SIGN_IN_URL; }
+    // Quick switches and Type on the PC (Core #524's shape). A typed value is a secret: the mock checks it and keeps only how many
+    // characters and a checksum (tests compare it), never the text.
+    const switches = [
+      { id: 'away', label: 'Away mode', icon: '☾', note: 'Monitors and RGB off, inputs locked.', kind: 'toggle', button: null,
+        confirm_text: 'Monitors and RGB go off and the keyboard and mouse stop working until you turn it off.', needs_confirm: false,
+        has_status: true, on: false, detail: 'monitors, RGB and inputs normal', error: '' },
+      { id: 'game-bot', label: 'Dillon\'s game bot', icon: '◆', note: 'Plays on its own while you are away.', kind: 'toggle', button: null,
+        confirm_text: null, needs_confirm: false, has_status: true, on: true, detail: '', error: '' },
+      { id: 'restart-pc', label: 'Restart PC', icon: '⟳', note: 'A clean restart of the whole PC.', kind: 'button', button: 'Restart',
+        confirm_text: 'The PC restarts right away: anything unsaved on it is lost.', needs_confirm: true, has_status: false, on: null, detail: '', error: '' },
+    ];
+    const typeReqs = [], typed = [], switchLog = [];
+    let switchBusy = false, restarts = 0;
+    const switchFail = {};                       // id -> true: the next flip of that switch fails with switch_failed
     const t0 = Date.now();
     const desk = opts.desktop || null;            // a GupMockDesk (browser only: it needs WebRTC)
 
@@ -256,7 +270,7 @@
         usage: { five_hour: 34.0, five_hour_resets: iso(t0 + 3.2 * 3600e3), seven_day: 61.0, seven_day_resets: iso(t0 + 3.6 * 86400e3),
                  taken_at: iso(Date.now() - 90e3) },
         gup: { status: busy ? 'answering' : 'idle', busy, queued: msgs.filter(m => m.role === 'owner' && m.queued).length },
-        waiting: waiting.length, device: { paired_at: iso(t0 - 86400e3) },
+        waiting: waiting.length, type_requests: liveTypeReqs().length, device: { paired_at: iso(t0 - 86400e3) },
         claude_login: { state: claude.state, since: claude.since ? iso(claude.since) : null, message: CLAUDE_MSG[claude.state] },
       });
     }
@@ -294,6 +308,82 @@
         else { claude.state = 'expired'; claude.url = null; claude.error = 'bad_code'; }
       });
       return claudeLogin();
+    }
+
+    // ---------------------------------------------------------------- Quick switches (Core #524)
+    //   GET  /v1/switches        -> {switches: [{id, label, icon, note, kind: toggle | button, button, confirm_text, needs_confirm, has_status, on, detail, error}]}
+    //   POST /v1/switches/<id>   {action: on | off} -> 200 {ok, switch}; 502 switch_failed; 503 busy
+    //                            {action: run, confirm: {key: switch:restart-pc, action: run, method, at}} -> 202 {ok, restarting}; 428 confirmation_required
+    function confirmOk(confirm, key, action) {
+      const at = confirm && Date.parse(confirm.at);
+      return !!confirm && typeof confirm === 'object' && confirm.key === key && confirm.action === action &&
+        METHODS.includes(confirm.method) && !!at && Math.abs(Date.now() - at) <= 120e3;
+    }
+    function getSwitches() { return ok({ switches: JSON.parse(JSON.stringify(switches)) }); }
+    async function postSwitch(id, body) {
+      const sw = switches.find(x => x.id === id);
+      if (!sw) return err(404, 'not_found', 'no such switch');
+      const action = body.action;
+      if (sw.kind === 'button') {
+        if (action !== 'run') return err(400, 'bad_request', 'this one only runs');
+        if (!confirmOk(body.confirm, 'switch:' + sw.id, 'run')) return err(428, 'confirmation_required', 'Confirm with Face ID first.');
+        if (switchFail[id]) { delete switchFail[id]; return err(502, 'restart_refused', 'an app is holding shutdown off'); }
+        restarts++; switchLog.push({ id, action });
+        return ok({ ok: true, restarting: true }, 202);
+      }
+      if (action !== 'on' && action !== 'off') return err(400, 'bad_request', 'action is on or off');
+      if (switchBusy) return err(503, 'busy', 'Another switch is still changing.');
+      switchBusy = true;
+      try {
+        await tick(400);
+        if (switchFail[id]) { delete switchFail[id]; return err(502, 'switch_failed', 'the command exited with 1'); }
+        sw.on = action === 'on';
+        if (sw.id === 'away') sw.detail = sw.on ? 'monitors off, RGB off, inputs locked' : 'monitors, RGB and inputs normal';
+        switchLog.push({ id, action });
+        return ok({ ok: true, switch: JSON.parse(JSON.stringify(sw)) });
+      } finally { switchBusy = false; }
+    }
+
+    // ---------------------------------------------------------------- Type on the PC (Core #524)
+    //   GET  /v1/type-requests        -> {requests: [{id, title, note, target, fields: [{label, secret}], enter, asker, created, expires}]} (unix seconds)
+    //   POST /v1/type-requests/<id>   {values, enter?, confirm: {key: type:<id>, action: type, ...}} -> 200 {ok, result: {status: typed, enter}}
+    //   POST /v1/type-requests/<id>/cancel {} -> 200 {ok}; 409 stale
+    const TYPE_MAX = 256;
+    const liveTypeReqs = () => typeReqs.filter(r => r.state === 'waiting' && r.expires * 1000 > Date.now());
+    function getTypeRequests() {
+      return ok({ requests: liveTypeReqs().map(r => ({ id: r.id, title: r.title, note: r.note, target: r.target, fields: r.fields,
+        enter: r.enter, asker: r.asker, created: r.created, expires: r.expires })) });
+    }
+    function postType(id, body) {
+      const r = typeReqs.find(x => x.id === id);
+      if (!r) return err(404, 'not_found', 'no such request');
+      if (!confirmOk(body.confirm, 'type:' + id, 'type')) return err(428, 'confirmation_required', 'Confirm with Face ID first.');
+      if (r.state !== 'waiting' || r.expires * 1000 <= Date.now()) return err(409, 'stale', 'That request is finished or expired. Refresh.');
+      const v = body.values;
+      if (!Array.isArray(v) || v.length !== r.fields.length || v.some(x => typeof x !== 'string')) return err(400, 'bad_request', 'one text per field');
+      if (v.some(x => x.length > TYPE_MAX)) return err(413, 'too_large', `over ${TYPE_MAX} characters`);
+      if (v.some(x => /[^\x20-\x7e]/.test(x))) return err(400, 'untypeable', 'US-keyboard characters only');
+      if (r.fail) { r.state = 'error'; return err(502, 'keyboard_error', 'The window is gone or the virtual keyboard is not running.'); }
+      r.state = 'typed';
+      typed.push({ id, lengths: v.map(x => x.length), sums: v.map(x => Array.from(x).reduce((a, c) => a + c.charCodeAt(0), 0)),
+        enter: typeof body.enter === 'boolean' ? body.enter : r.enter });
+      return ok({ ok: true, result: { status: 'typed', enter: typeof body.enter === 'boolean' ? body.enter : r.enter } });
+    }
+    function cancelType(id) {
+      const r = typeReqs.find(x => x.id === id);
+      if (!r) return err(404, 'not_found', 'no such request');
+      if (r.state !== 'waiting' || r.expires * 1000 <= Date.now()) return err(409, 'stale', 'It isn\'t waiting anymore.');
+      r.state = 'cancelled';
+      return ok({ ok: true });
+    }
+    function addTypeRequest(o) {
+      o = o || {};
+      const now = Date.now() / 1000;
+      const r = { id: hex(32), title: o.title || 'Sign in to GitHub', note: o.note || 'the login page', target: o.target || 'Sign in to GitHub - Google Chrome',
+        fields: o.fields || [{ label: 'Password', secret: true }], enter: o.enter !== false, asker: o.asker || 'worker-1',
+        created: now, expires: now + (o.seconds || 540), state: 'waiting', fail: !!o.fail };
+      typeReqs.push(r);
+      return r.id;
     }
 
     async function getMessages(q, signal) {
@@ -390,6 +480,8 @@
       '/v1/waiting': { GET: (q, b, s) => getWaiting(q, s) },
       '/v1/waiting/act': { POST: (q, b) => act(b) },
       '/v1/auth/rotate': { POST: () => rotate() },
+      '/v1/switches': { GET: () => getSwitches() },
+      '/v1/type-requests': { GET: () => getTypeRequests() },
       '/v1/claude-login': { GET: () => claudeLogin() },
       '/v1/claude-login/start': { POST: () => claudeStart() },
       '/v1/claude-login/code': { POST: (q, b) => claudeCode(b) },
@@ -398,6 +490,14 @@
       '/v1/desktop/sessions': { POST: (q, b) => desk ? desk.start(b) : err(503, 'host_unavailable', 'This mock has no desktop host.') },
     };
     const DESK_SESSION = /^\/v1\/desktop\/sessions\/([A-Za-z0-9_-]{22})\/(answer|end)$/;
+    const SWITCH_ROUTE = /^\/v1\/switches\/([a-z0-9-]{1,40})$/, TYPE_ROUTE = /^\/v1\/type-requests\/([0-9a-f]{32})(\/cancel)?$/;
+    function pathRoute(path) {
+      let m = SWITCH_ROUTE.exec(path);
+      if (m) return { POST: (q, b) => postSwitch(m[1], b) };
+      m = TYPE_ROUTE.exec(path);
+      if (m) return { POST: (q, b) => m[2] ? cancelType(m[1]) : postType(m[1], b) };
+      return null;
+    }
     function deskRoute(path) {
       const m = DESK_SESSION.exec(path);
       if (!m) return null;
@@ -411,7 +511,7 @@
         await sleep(authDelayMs);
         return err(401, 'unauthorized', 'Not paired: pair this phone again.');
       }
-      const route = ROUTES[req.path] || deskRoute(req.path);
+      const route = ROUTES[req.path] || pathRoute(req.path) || deskRoute(req.path);
       if (!route) return err(404, 'not_found', 'no such endpoint');
       const fn = route[req.method];
       if (!fn) return err(405, 'method_not_allowed', `use ${Object.keys(route).join(' or ')}`);
@@ -434,7 +534,13 @@
       handle,
       get token() { return tokens.current; },
       /** test and demo helpers */
-      addWaiting, proposedItem,
+      addWaiting, proposedItem, addTypeRequest,
+      /** what the PC did, without any typed text: [{id, lengths, sums, enter}], the flips, and how many restarts */
+      get typed() { return typed.map(t => Object.assign({}, t)); },
+      get switchLog() { return switchLog.slice(); },
+      get restarts() { return restarts; },
+      failSwitch(id) { switchFail[id] = true; },
+      setSwitch(id, patch) { Object.assign(switches.find(x => x.id === id), patch); },
       set(o) {
         if ('paused' in o) settings.paused = o.paused;
         if ('newWork' in o) settings.newWork = o.newWork;

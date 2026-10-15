@@ -407,3 +407,40 @@ html.desk-on .tabbar { display: none; }
 .claude .cl-input::placeholder { color: var(--dim); }
 .claude .cl-input:focus { box-shadow: inset 0 0 0 1.5px var(--acc); }
 .claude .cl-spin { font-size: 13px; color: var(--amber); }
+
+/* ---------------------------------------------------------------- Switches and "type on the PC" (switches.js) */
+.sws { gap: 12px; }
+.sws .hdr { display: flex; align-items: center; gap: 10px; padding: 0 4px; }
+.sws .hdr h1 { flex: 1; }
+.swback { width: 40px; height: 40px; border-radius: 50%; display: flex; align-items: center; justify-content: center; flex: none; }
+.sw { display: flex; flex-direction: column; gap: 8px; }
+.sw .swh { display: flex; align-items: center; gap: 12px; }
+.sw .swi { width: 40px; height: 40px; border-radius: 12px; display: flex; align-items: center; justify-content: center; flex: none; font-size: 20px;
+  background: rgba(124,140,255,.16); box-shadow: inset 0 0 0 1px rgba(124,140,255,.35); color: var(--acc2); }
+.sw .swn { font-size: 16px; font-weight: 800; letter-spacing: -.3px; }
+.sw .swn2 { font-size: 13px; margin-top: 2px; }
+.sw .swt2 { font-size: 13px; color: var(--mut); line-height: 1.5; }
+.sw .swd { font-size: 12.5px; color: var(--dim); }
+.swe { font-size: 13px; line-height: 1.5; color: var(--amber); width: 100%; align-self: stretch; }
+.swe:empty { display: none; }
+.swe.bad { color: #ff8d98; } .swe.good { color: var(--green); }
+.swt { width: 58px; height: 34px; border-radius: 17px; flex: none; position: relative; background: rgba(255,255,255,.14); transition: background .15s; }
+.swt i { position: absolute; top: 3px; left: 3px; width: 28px; height: 28px; border-radius: 50%; background: #fff; transition: transform .15s; }
+.swt.on { background: #2fc872; } .swt.on i { transform: translateX(24px); }
+.swt.unk { background: rgba(255,179,71,.3); } .swt.unk i { transform: translateX(12px); }
+.swt[disabled] { opacity: .5; pointer-events: none; }
+.swbtn { width: auto; flex: none; height: 44px; padding: 0 20px; }
+.swask .vtext { font-size: 17px; font-weight: 600; }
+.swask .vrow .btn { flex: 1; }
+.vsheet.typing { align-items: stretch; }
+.typing .ty-what .ctext { font-size: 13px; font-weight: 500; color: var(--mut); margin-top: 6px; letter-spacing: 0; word-break: break-word; }
+.typing .ty-fields { display: flex; flex-direction: column; gap: 10px; }
+.typing .tyf { display: flex; flex-direction: column; gap: 5px; font-size: 12.5px; color: var(--mut); }
+.typing .ty-in { width: 100%; height: 52px; padding: 0 18px; border-radius: 26px; background: rgba(0,0,0,.25); font-size: 17px; color: var(--tx);
+  box-shadow: inset 0 0 0 1px rgba(255,255,255,.08); }
+.typing .ty-in:focus { box-shadow: inset 0 0 0 1.5px var(--acc); }
+.typing .ty-in:disabled { opacity: .5; }
+.typing .tyenter { display: flex; align-items: center; gap: 10px; font-size: 13.5px; color: var(--mut); }
+.typing .tyenter input { width: 20px; height: 20px; accent-color: var(--acc); }
+.typing .vrow .btn { flex: 1; }
+.typing .btn { align-self: stretch; }

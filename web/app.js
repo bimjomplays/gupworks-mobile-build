@@ -8,7 +8,7 @@
    scripts/mock-phone-api.js. */
 (function (root) {
   'use strict';
-  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair, Lock = root.GupLock, Claude = root.GupClaude;
+  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair, Lock = root.GupLock, Claude = root.GupClaude, Switches = root.GupSwitches;
   const { ic, bot, ring, esc, fmtText, when, clock, ago, cap, toast, sheet } = root.GupUI;
   const $ = id => document.getElementById(id);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -31,8 +31,9 @@
   function showTab(tab) {
     S.tab = tab;
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + tab));
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === tab));
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === (tab === 'switches' ? 'status' : tab)));
     if (tab === 'status') refreshStatus();
+    if (tab === 'switches') Switches.show();
     if (tab === 'desktop') root.GupDesk.show(); else root.GupDesk.hide();
     if (tab === 'gup') stickBottom(false);
   }
@@ -627,6 +628,7 @@
       : `<b class="amber">› new work on hold</b> · ${esc(nw.why || 'held')}`) + `</span></div>`;
     const g = s.gup || {};
     const queued = Number(g.queued) || 0, waiting = Number(s.waiting) || 0;
+    const typeWaiting = Switches.state.requests.length || Number(s.type_requests) || 0;
     const gupLine = g.busy ? 'answering now' : String(g.status || 'idle');
     const rows =
       `<button class="cr" data-go="gup" type="button">${bot('gup', 38, { radius: 11 })}<div class="grow"><div class="a">Gup <span>· ${esc(gupLine)}</span></div>` +
@@ -634,6 +636,9 @@
       `<span class="v ${g.busy ? 'green' : 'dim'}">${g.busy ? '●' : '○'}</span></button>` +
       `<button class="cr" data-go="waiting" type="button"><span class="ico">${ic('inbox', 20)}</span><div class="grow"><div class="a">Waiting on you</div>` +
       `<div class="b">${waiting ? `${waiting} to decide` : 'all clear'}</div></div><span class="v ${waiting ? 'amber' : 'green'}">${waiting || '✓'}</span></button>` +
+      `<button class="cr" data-go="switches" type="button"><span class="ico">${ic('flash', 20)}</span><div class="grow"><div class="a">Switches</div>` +
+      `<div class="b">${typeWaiting ? `${typeWaiting} asking to type on the PC` : 'Away mode, game bot, restart PC'}</div></div>` +
+      `${typeWaiting ? `<span class="v amber">${typeWaiting}</span>` : ic('chev', 16, 2.4, 'dim')}</button>` +
       `<button class="cr" data-phone type="button"><span class="ico">${ic('lock', 20)}</span><div class="grow"><div class="a">This phone` +
       `${S.phone && S.phone.host ? ` <span>· ${esc(S.phone.host)}</span>` : ''}</div>` +
       `<div class="b">${s.device && s.device.paired_at ? 'paired ' + esc(when(s.device.paired_at)) : 'paired'} · ${API.mode === 'mock' ? 'dev mock' : 'over Tailscale'}</div></div>` +
@@ -674,6 +679,7 @@
   function onPaired(e) {
     root.GupDesk.reset();
     Claude.reset();
+    Switches.reset();
     S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null;
     usePaired(e);
     start();
@@ -710,6 +716,7 @@
     API.reset();
     root.GupDesk.reset();
     Claude.reset();
+    Switches.reset();
     S.phone = null;
     S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null; S.busy = false; S.stopping = false;
     S.conn = 'connecting';
@@ -743,6 +750,7 @@
     waitingLoop(ctl.signal);
     statusLoop(ctl.signal);
     Claude.run(ctl.signal);
+    Switches.run(ctl.signal);
     if (S.tab === 'desktop') root.GupDesk.show();
   }
 
@@ -766,7 +774,7 @@
   // the shell locked (the app went to the background) or Face ID / the passcode passed
   N.on('lock', e => {
     if (e.locked) {
-      if (!Lock.isLocked) { stop(); if (Pair.isOpen) Pair.close(); root.GupDesk.lock(); Claude.closeSheet(); }
+      if (!Lock.isLocked) { stop(); if (Pair.isOpen) Pair.close(); root.GupDesk.lock(); Claude.closeSheet(); Switches.closeSheet(); }
       Lock.show(e);
     } else if (Lock.isLocked) {
       Lock.hide();                                      // at once: the shell says "unlocked" twice (unlock + sync)
@@ -798,6 +806,7 @@
     $('tab-status-icon').outerHTML = ic('pulse', 25, 1.9);
     root.GupDesk.wire();
     Claude.wire();
+    Switches.wire();
     syncComposer();
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
@@ -901,7 +910,7 @@
   async function boot() {
     if (params.has('frame')) devFrame();
     wire();
-    showTab(['gup', 'waiting', 'projects', 'desktop', 'status'].includes(params.get('tab')) ? params.get('tab') : 'gup');
+    showTab(['gup', 'waiting', 'projects', 'desktop', 'status', 'switches'].includes(params.get('tab')) ? params.get('tab') : 'gup');
     const mock = params.get('mock');
     if (mock === 'server') {
       // dev only, and only against a mock on this machine: mock mode fakes the owner confirmation
@@ -923,6 +932,6 @@
     start();
   }
 
-  root.GupApp = { start, stop, showTab, decide, openPairing, unpair, get state() { return S; } };
+  root.GupApp = { start, stop, showTab, decide, openPairing, unpair, renderStatus, get state() { return S; } };
   boot();
 })(window);

@@ -195,6 +195,26 @@
     /** The pasted code goes straight into the request body and nowhere else: not kept, not logged, never in an error text. */
     claudeLoginCode(code, opts) { return request('POST', '/v1/claude-login/code', Object.assign({ body: { code }, timeoutMs: 30000 }, opts)); },
 
+    // ---- Quick switches (Core #524: docs/phone-api.md "Quick switches"). Away mode and the game bot are toggles, Restart PC a button.
+    switches(opts) { return request('GET', '/v1/switches', Object.assign({ timeoutMs: 20000 }, opts)); },
+    /** Toggle: action 'on' | 'off'. Button (restart-pc): action 'run' + confirm from GupHooks.confirmSwitch(). A flip can take ~2.5 min. */
+    switchAct(id, action, confirm, opts) {
+      const body = { action };
+      if (confirm) body.confirm = confirm;
+      return request('POST', `/v1/switches/${encodeURIComponent(id)}`, Object.assign({ body, timeoutMs: 170000 }, opts));
+    },
+
+    // ---- Type on the PC (Core #524: "Type on the PC"): an agent needs a password or 2FA code typed into a PC window.
+    typeRequests(opts) { return request('GET', '/v1/type-requests', opts); },
+    /** The typed values go straight into the request body and nowhere else: not kept, not logged, never in an error text.
+        confirm comes from GupHooks.confirmType() only. */
+    typeAnswer(id, values, enter, confirm, opts) {
+      const body = { values, confirm };
+      if (typeof enter === 'boolean') body.enter = enter;
+      return request('POST', `/v1/type-requests/${encodeURIComponent(id)}`, Object.assign({ body, timeoutMs: 30000 }, opts));
+    },
+    typeCancel(id, opts) { return request('POST', `/v1/type-requests/${encodeURIComponent(id)}/cancel`, Object.assign({ body: {} }, opts)); },
+
     // ---- remote desktop (docs/remote-desktop-protocol.md "Signaling"; the PC's bridge forwards these to its host)
     /** {available, versions, session, reason}; always 200 (a host that isn't running reads as available: false) */
     desktopStatus(opts) { return request('GET', '/v1/desktop/status', opts); },

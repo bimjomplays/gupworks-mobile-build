@@ -61,6 +61,11 @@
     <div class="stat" id="s-body"></div>
   </section>
 
+  <!-- Switches (opened from Status): Away mode, game bot, Restart PC, and the "type on the PC" requests (switches.js) -->
+  <section class="view scroller" id="v-switches" aria-label="Switches">
+    <div class="stat sws" id="sw-body"></div>
+  </section>
+
   <!-- Claude signed out on the PC: one banner for every tab (claude.js) -->
   <button class="cbn g" id="cbn" type="button" hidden aria-label="Claude is signed out"></button>
 
@@ -134,6 +139,7 @@
 <script src="ui.js"></script>
 <script src="voice.js"></script>
 <script src="claude.js"></script>
+<script src="switches.js"></script>
 <script src="hooks.js"></script>
 <script src="pair.js"></script>
 <script src="lock.js"></script>
