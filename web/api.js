@@ -187,6 +187,10 @@
         Keychain and switches to it once the PC has seen it (docs/phone-api.md "Rotation from the app"). */
     rotate(opts) { return request('POST', '/v1/auth/rotate', Object.assign({ body: {} }, opts)); },
 
+    // ---- Overview (Core #606: docs/phone-api.md "GET /v1/overview"): {waiting: [...as /v1/waiting], running: [{id, project, title, state, worker}],
+    // done_today: [{id, project, title, closed_at}]}. Read-only. A 404 means an older PC.
+    overview(opts) { return request('GET', '/v1/overview', Object.assign({ timeoutMs: 20000 }, opts)); },
+
     // ---- Claude sign-in on the PC (Core #485: docs/phone-api.md). State {state: ok | expired | awaiting-code | finishing, since,
     // message, url (only while awaiting-code), expires_at, error: null | {code, message}, paused, version}. A 404 means an older PC.
     claudeLogin(opts) { return request('GET', '/v1/claude-login', opts); },

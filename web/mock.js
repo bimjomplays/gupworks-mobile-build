@@ -39,6 +39,7 @@
     let busy = false, working = false, longPolls = 0, stopping = false;   // stopping: the owner tapped stop on the running reply
     const msgs = [], queue = [], byClient = new Map(), waiters = new Set();
     let waiting = [], waitingRev = 1;
+    let overviewRunning = [], overviewDone = [];   // GET /v1/overview: running tickets, tickets done (with closed_at)
     const tokens = { current: opts.token || DEV_TOKEN, pending: null };
     const settings = { paused: false, newWork: { ok: true, why: 'ok' } };
     // Claude's login on the PC (Core #485's shape, see claudeLogin() below). Only the state is kept, never a pasted code.
@@ -234,6 +235,16 @@
       // item from an older PC, so the plain card is exercised too
       const reply = (label, action, text, style, recommended, pc_only) => ({ label, action, text, recommended: !!recommended, style, pc_only: !!pc_only });
       const card = (title, lines, replies) => ({ title, lines, replies, source: 'model', made_at: iso(now - 30 * min) });
+      overviewRunning = [
+        { id: 812, project: 'website', title: 'Rebuild the contact page', state: 'building', worker: 'sky-812-builder' },
+        { id: 815, project: 'mobile', title: 'Overview card on the phone', state: 'review', worker: 'mobile-815-reviewer' },
+        { id: 818, project: 'gupworks-core', title: 'Retry failed pushes', state: 'claimed', worker: null },
+      ];
+      overviewDone = [
+        { id: 801, project: 'ghost', title: 'Fix the login screen glitch', closed_at: iso(now - 50 * min) },
+        { id: 799, project: 'website', title: 'Add opening hours to the footer', closed_at: iso(now - 5 * 60 * min) },
+        { id: 760, project: 'mobile', title: 'Old one from two days ago', closed_at: iso(now - 48 * 60 * min) },
+      ];
       waiting = [
         { key: 'approval:12', kind: 'approval', ref: 12, ticket: 806, project: 'ghost', title: 'Publish Ghost 1.15.2',
           detail: 'Gate green: 41 passed, 0 failed. Reviewed by Opus 5.5.', by: 'casper', at: iso(now - 120 * min), actions: yesNo, pc_only: false,
@@ -437,6 +448,17 @@
       return ok({ items: JSON.parse(JSON.stringify(waiting)), count: waiting.length, version: version() });
     }
 
+    // GET /v1/overview (Core #606): the waiting items, the tickets claimed / building / in review (oldest id first) and the ones done
+    // in the last 24 h (newest first, at most 30). ?overview=off in the page = a PC without it (404) is handled by the transport.
+    function getOverview() {
+      const cut = Date.now() - 24 * 3600e3;
+      return ok({
+        waiting: JSON.parse(JSON.stringify(waiting)),
+        running: JSON.parse(JSON.stringify(overviewRunning.slice().sort((a, b) => a.id - b.id))),
+        done_today: JSON.parse(JSON.stringify(overviewDone.filter(t => Date.parse(t.closed_at) >= cut).sort((a, b) => Date.parse(b.closed_at) - Date.parse(a.closed_at)).slice(0, 30))),
+      });
+    }
+
     function act(body) {
       const { key, action, confirm } = body;
       if (typeof key !== 'string' || typeof action !== 'string') return err(400, 'bad_request', 'key and action are required');
@@ -480,6 +502,7 @@
       '/v1/waiting': { GET: (q, b, s) => getWaiting(q, s) },
       '/v1/waiting/act': { POST: (q, b) => act(b) },
       '/v1/auth/rotate': { POST: () => rotate() },
+      '/v1/overview': { GET: () => getOverview() },
       '/v1/switches': { GET: () => getSwitches() },
       '/v1/type-requests': { GET: () => getTypeRequests() },
       '/v1/claude-login': { GET: () => claudeLogin() },
@@ -535,6 +558,8 @@
       get token() { return tokens.current; },
       /** test and demo helpers */
       addWaiting, proposedItem, addTypeRequest,
+      /** the Overview's running tickets and done tickets (done ones older than 24 h are left out by the endpoint, like the PC) */
+      setOverview(o) { if (o.running) overviewRunning = o.running; if (o.done) overviewDone = o.done; },
       /** what the PC did, without any typed text: [{id, lengths, sums, enter}], the flips, and how many restarts */
       get typed() { return typed.map(t => Object.assign({}, t)); },
       get switchLog() { return switchLog.slice(); },

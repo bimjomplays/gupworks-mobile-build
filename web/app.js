@@ -8,7 +8,7 @@
    scripts/mock-phone-api.js. */
 (function (root) {
   'use strict';
-  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair, Lock = root.GupLock, Claude = root.GupClaude, Switches = root.GupSwitches;
+  const API = root.GupAPI, H = root.GupHooks, N = root.GupNative, Pair = root.GupPair, Lock = root.GupLock, Claude = root.GupClaude, Switches = root.GupSwitches, Overview = root.GupOverview;
   const { ic, bot, ring, esc, fmtText, when, clock, ago, cap, toast, sheet } = root.GupUI;
   const $ = id => document.getElementById(id);
   const sleep = ms => new Promise(r => setTimeout(r, ms));
@@ -31,9 +31,10 @@
   function showTab(tab) {
     S.tab = tab;
     document.querySelectorAll('.view').forEach(v => v.classList.toggle('on', v.id === 'v-' + tab));
-    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === (tab === 'switches' ? 'status' : tab)));
+    document.querySelectorAll('.tab').forEach(t => t.classList.toggle('on', t.dataset.tab === (tab === 'switches' ? 'status' : tab === 'overview' ? 'waiting' : tab)));
     if (tab === 'status') refreshStatus();
     if (tab === 'switches') Switches.show();
+    if (tab === 'overview') Overview.show();
     if (tab === 'desktop') root.GupDesk.show(); else root.GupDesk.hide();
     if (tab === 'gup') stickBottom(false);
   }
@@ -680,6 +681,7 @@
     root.GupDesk.reset();
     Claude.reset();
     Switches.reset();
+    Overview.reset();
     S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null;
     usePaired(e);
     start();
@@ -717,6 +719,7 @@
     root.GupDesk.reset();
     Claude.reset();
     Switches.reset();
+    Overview.reset();
     S.phone = null;
     S.msgs.clear(); S.cursor = null; S.pending = []; S.items = null; S.version = null; S.status = null; S.busy = false; S.stopping = false;
     S.conn = 'connecting';
@@ -751,6 +754,7 @@
     statusLoop(ctl.signal);
     Claude.run(ctl.signal);
     Switches.run(ctl.signal);
+    Overview.run(ctl.signal);
     if (S.tab === 'desktop') root.GupDesk.show();
   }
 
@@ -807,6 +811,9 @@
     root.GupDesk.wire();
     Claude.wire();
     Switches.wire();
+    Overview.wire();
+    $('w-seg').innerHTML = Overview.segment('waiting');
+    $('w-seg').addEventListener('click', e => { const b = e.target.closest('[data-seg]'); if (b) showTab(b.dataset.seg); });
     syncComposer();
 
     document.querySelectorAll('.tab').forEach(t => t.addEventListener('click', () => showTab(t.dataset.tab)));
@@ -910,7 +917,7 @@
   async function boot() {
     if (params.has('frame')) devFrame();
     wire();
-    showTab(['gup', 'waiting', 'projects', 'desktop', 'status', 'switches'].includes(params.get('tab')) ? params.get('tab') : 'gup');
+    showTab(['gup', 'waiting', 'projects', 'desktop', 'status', 'switches', 'overview'].includes(params.get('tab')) ? params.get('tab') : 'gup');
     const mock = params.get('mock');
     if (mock === 'server') {
       // dev only, and only against a mock on this machine: mock mode fakes the owner confirmation

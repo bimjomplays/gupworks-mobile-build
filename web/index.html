@@ -40,6 +40,7 @@
   <!-- Waiting on you -->
   <section class="view scroller" id="v-waiting" aria-label="Waiting on you">
     <div class="top"><h1>Waiting on you</h1><div class="sub" id="w-sub">loading…</div></div>
+    <div id="w-seg"></div>
     <div class="filters" id="w-filters"></div>
     <div class="list" id="w-list"></div>
   </section>
@@ -64,6 +65,11 @@
   <!-- Switches (opened from Status): Away mode, game bot, Restart PC, and the "type on the PC" requests (switches.js) -->
   <section class="view scroller" id="v-switches" aria-label="Switches">
     <div class="stat sws" id="sw-body"></div>
+  </section>
+
+  <!-- Overview (beside Waiting): what is waiting, running and done today, read-only (overview.js) -->
+  <section class="view scroller" id="v-overview" aria-label="Overview">
+    <div class="stat ovw" id="ov-body"></div>
   </section>
 
   <!-- Claude signed out on the PC: one banner for every tab (claude.js) -->
@@ -140,6 +146,7 @@
 <script src="voice.js"></script>
 <script src="claude.js"></script>
 <script src="switches.js"></script>
+<script src="overview.js"></script>
 <script src="hooks.js"></script>
 <script src="pair.js"></script>
 <script src="lock.js"></script>
